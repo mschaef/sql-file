@@ -3,7 +3,8 @@
   :description "Library for managing data files used by embedded databases."
 
   :url "http://www.ksmpartners.com/"
-  :license {:name "All Rights Reserved, Copyright 2013-14 KSM Technology Partners"}
+  :license {:name "The Apache Software License, Version 2.0"}
+
   :main sql-file.main
   :aot [sqi-file.main]
 
