@@ -10,7 +10,7 @@
 ;
 ; You must not remove this notice, or any other, from this software.
 
-(defproject com.ksmpartners/sql-file "0.1.0-SNAPSHOT"
+(defproject com.ksmpartners/sql-file "0.1.0"
 
   :description "Library for managing data files used by embedded databases."
 
