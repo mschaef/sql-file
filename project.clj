@@ -22,14 +22,16 @@
   :description "Library for managing data files used by embedded databases."
 
   :url "http://www.ksmpartners.com/"
-  :license {:name "The Apache Software License, Version 2.0"}
+  :license {:name "The Apache Software License, Version 2.0"
+            :url "http://www.apache.org/licenses/LICENSE-2.0"}
+
+  :scm {:name "git"
+        :url "https://github.com/ksmpartners/sql-file.git"}
 
   :main sql-file.main
   :aot [sqi-file.main]
 
-  :jvm-opts ["-Xms1g" "-Xmx1g"
-             "-XX:+HeapDumpOnOutOfMemoryError"
-             "-Djava.util.logging.config.file=logging.properties" ]
+  :jvm-opts ["-Djava.util.logging.config.file=logging.properties" ]
 
   :dependencies [[org.clojure/clojure "1.6.0"]
                  [org.hsqldb/hsqldb "2.3.2"]
