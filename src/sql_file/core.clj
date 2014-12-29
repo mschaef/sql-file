@@ -22,7 +22,8 @@ the resource if it's found or throwing an exception if not."
   (or (clojure.java.io/resource resource-name)
       (throw (Exception. (str "Cannot find resource script: " resource-name)))))
 
-;;; TODO: Add a baikal/ -like prefix that allows schema files to be confined to directories.
+;;; TODO: Add a directory/ -like prefix that allows schema files to be
+;;; confined to directories.
 
 (defn schema-install-script [ schema-name schema-version ]
   "Locate the schema script to install the given schema name and
