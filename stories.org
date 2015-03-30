@@ -1,0 +1,4 @@
+* Backlog
+** Better error messages when init script fails
+** Support for thread pooling
+** Logging of the times associated with schema operations
