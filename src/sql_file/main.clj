@@ -22,7 +22,6 @@
 ;; You must not remove this notice, or any other, from this software.
 
 (ns sql-file.main
-  (:use sql-file.util)
   (:require [sql-file.core :as core]
             [clojure.java.jdbc :as jdbc]
             [clojure.tools.logging :as log]))
