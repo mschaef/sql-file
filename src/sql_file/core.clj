@@ -53,7 +53,7 @@ version n, where n=to-version."
 (defn run-script [ conn script-url ]
   "Run the database script at the given URL against a specific
 database connection."
-  (log/info "Run script" script-url)
+  (log/debug "Run script" script-url)
   (let [ script-text (slurp script-url) ]
     (do-statements conn (script/sql-statements script-text))))
 
@@ -62,7 +62,7 @@ database connection."
 database connection. Exceptions will be logged and a boolean value
 will be returned that indicates whether or not the script execution
 was successful."
-  (log/info "Safe run script" script-url)
+  (log/debug "Safe run script" script-url)
   (try
     (run-script conn script-url)
     true
