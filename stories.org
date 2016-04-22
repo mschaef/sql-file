@@ -1,8 +1,19 @@
 * Pending
 ** There is a way to set a directory prefix for the schema file scan.
+** SQL Utilities are exported from sql-file.util
 ** The scheme operation error message includes the line number of the failing statement.
-** There is a way to open a database file that avoids the requirement to verify the schema
-** There is support for some kind of connection pooling
+** There is support for some kind of connection pooling, in order to avoid open/closee
 ** Logging of the times associated with schema operations
 * Completed
 ** An error message is logged at error level if a schema operation fails.
+** There is a way to open a database file that avoids the requirement to verify the schema
+   This can be done by using a globally bound delay to hold the connection
+
+   (def db-connection
+     (delay (sql-file/open-hsqldb-file-conn (config-property "db.subname" "petros-db")  "petros" 0)))
+
+   (def ^:dynamic *db* nil)
+
+   (defmacro with-db-connection [ & body ]
+     `(binding [ *db* @db-connection ]
+        ~@body))

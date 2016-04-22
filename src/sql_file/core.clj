@@ -132,19 +132,6 @@ schema in the target database instance."
      :else
      (throw (Exception. (str "Cannot downgrade schema " schema-name " from version " cur-schema-version " to " req-schema-version))))))
 
-(defn hsqldb-file-conn [ filename ]
-  "Construct a connection map for an HSQLDB database with the given
-filename and schema."
-  {:classname "org.hsqldb.jdbc.JDBCDriver"
-   :subprotocol  "hsqldb"
-   :subname filename})
-
-(defn hsqldb-memory-conn [ aname ]
-  "Construct a connection map for an in-memory HSQLDB database with
-the given aname and schema."
-  {:classname "org.hsqldb.jdbc.JDBCDriver"
-   :subprotocol  "hsqldb"
-   :subname (str "mem:" aname)})
 
 (defn conn-assoc-schema [ conn schema-name schema-version ]
   "Add a sql-file schema to the connection map."
@@ -163,6 +150,20 @@ are present in the target database."
               conn)
             conn
             req-schemas)))
+
+(defn hsqldb-file-conn [ filename ]
+  "Construct a connection map for an HSQLDB database with the given
+filename and schema."
+  {:classname "org.hsqldb.jdbc.JDBCDriver"
+   :subprotocol  "hsqldb"
+   :subname filename})
+
+(defn hsqldb-memory-conn [ aname ]
+  "Construct a connection map for an in-memory HSQLDB database with
+the given aname and schema."
+  {:classname "org.hsqldb.jdbc.JDBCDriver"
+   :subprotocol  "hsqldb"
+   :subname (str "mem:" aname)})
 
 (defn open-hsqldb-file-conn [ filename schema-name schema-version ]
   "Open an HSQLDB database file with the given filename, and ensure
