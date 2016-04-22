@@ -57,6 +57,19 @@ database connection."
   (let [ script-text (slurp script-url) ]
     (do-statements conn (script/sql-statements script-text))))
 
+(defn safe-run-script [ conn script-url ]
+  "Safely run the database script at the given URL against a specific
+database connection. Exceptions will be logged and a boolean value
+will be returned that indicates whether or not the script execution
+was successful."
+  (log/info "Safe run script" script-url)
+  (try
+    (run-script conn script-url)
+    true
+    (catch Exception ex
+      (log/error ex "Error running script: " script-url)
+      false)))
+
 (defn get-schema-version [ conn schema-name ]
   "Retrieves the current version of a schema within a database managed
 by sql-file. If there is no such schema, this function returns nil. If
@@ -89,7 +102,7 @@ sql-file."
   "Locate and run the script necessary to install the specified
 schema in the target database instance."
   (log/info "Installing schema" schema-name "version" schema-version)
-  (run-script conn (schema-install-script schema-name schema-version))
+  (safe-run-script conn (schema-install-script schema-name schema-version))
   (set-schema-version conn schema-name schema-version))
 
 (defn migrate-schema [ conn schema-name cur-schema-version req-schema-version ]
@@ -98,7 +111,7 @@ of a database schema to the requested version."
   (log/info "Upgrading schema" schema-name "from version" cur-schema-version "to" req-schema-version)
   (doseq [ from-version (range cur-schema-version req-schema-version )]
     (let [ to-version (+ from-version 1) ]
-      (run-script conn (schema-migrate-script schema-name to-version))
+      (safe-run-script conn (schema-migrate-script schema-name to-version))
       (set-schema-version conn schema-name to-version))))
 
 (defn ensure-schema [ conn schema-name req-schema-version ]
