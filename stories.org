@@ -1,4 +1,6 @@
-* Backlog
-** Better error messages when init script fails
-** Support for thread pooling
-** Logging of the times associated with schema operations
+* An error message is logged at error level if a schema operation fails.
+* There is a way to set a directory prefix for the schema file scan.
+* The scheme operation error message includes the line number of the failing statement.
+* There is a way to open a database file that avoids the requirement to verify the schema
+* There is support for some kind of connection pooling
+* Logging of the times associated with schema operations
