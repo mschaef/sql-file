@@ -29,8 +29,9 @@
 (def memory-db? false)
 
 (defn -main []
-  (jdbc/with-db-connection [ conn (if memory-db?
-                                    (core/open-hsqldb-memory-conn "test-db" "test" 0)
-                                    (core/open-hsqldb-file-conn "test-db" "test" 0))]
+  (jdbc/with-db-connection [ conn (core/open-sql-file (if memory-db?
+                                                        (core/hsqldb-memory-conn "test-db")
+                                                        (core/hsqldb-file-conn "test-db"))
+                                                      [["test" 0]])]
     (log/info "Conn: " conn))
   (log/info "end run."))
