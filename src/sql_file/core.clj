@@ -28,30 +28,28 @@
             [clojure.java.jdbc :as jdbc]
             [sql-file.script :as script]))
 
-(defn- locate-resource-script [ resource-name ]
-  "Locates the resource with the given name, either returning a URL to
-the resource if it's found or throwing an exception if not."
-  (or (clojure.java.io/resource resource-name)
-      (throw (Exception. (str "Cannot find resource script: " resource-name)))))
+(defn- locate-schema-script [ conn basename ]
+  (or (some identity
+            (map (fn [ prefix ]
+                   (let [ script-path (format "%s%s" prefix basename)]
+                     (log/debug "Checking for script:" script-path)
+                     (clojure.java.io/resource script-path)))
+                 (conj (get conn :script-prefixes []) "")))
+      (throw (Exception. (str "Cannot find resource script: " basename)))))
 
-;;; TODO: Add a directory/ -like prefix that allows schema files to be
-;;; confined to directories.
-
-(defn- schema-install-script [ schema ]
+(defn- schema-install-script [ conn schema ]
   "Locate the schema script to install the given schema name and
 version. If there is no such script, throws an exception."
-  (let [ [ schema-name schema-version ] schema]
-    (locate-resource-script
-     (format "schema-%s-%s.sql" schema-name schema-version))))
+  (let [[ schema-name schema-version ] schema]
+    (locate-schema-script conn (format "schema-%s-%s.sql" schema-name schema-version))))
 
-(defn- schema-migrate-script [ schema ]
+(defn- schema-migrate-script [ conn schema ]
   "Locate the schema migration script for the given schema name and
 to-version. If there is no such script, throws an exception. The
 migration script is expected to migrate the schema from version n-1 to
 version n, where n=to-version."
   (let [ [ schema-name schema-to-version ] schema ]
-    (locate-resource-script
-     (format "schema-%s-migrate-to-%s.sql" schema-name schema-to-version))))
+    (locate-schema-script conn (format "schema-%s-migrate-to-%s.sql" schema-name schema-to-version))))
 
 (defn- run-script [ conn script-url ]
   "Run the database script at the given URL against a specific
@@ -106,7 +104,7 @@ sql-file."
 schema in the target database instance."
   (log/info "Installing schema:" schema)
   (let [ [schema-name schema-version ] schema ]
-    (safe-run-script conn (schema-install-script schema))
+    (safe-run-script conn (schema-install-script conn schema))
     (set-schema-version! conn schema-name schema-version)))
 
 (defn- migrate-schema [ conn schema-name cur-schema-version req-schema-version ]
@@ -115,7 +113,7 @@ of a database schema to the requested version."
   (log/info "Upgrading schema" schema-name "from version" cur-schema-version "to" req-schema-version)
   (doseq [ from-version (range cur-schema-version req-schema-version )]
     (let [ to-version (+ from-version 1) ]
-      (safe-run-script conn (schema-migrate-script [ schema-name to-version ]))
+      (safe-run-script conn (schema-migrate-script conn [ schema-name to-version ]))
       (set-schema-version! conn schema-name to-version))))
 
 (defn- ensure-schema [ conn schema ]
