@@ -136,7 +136,7 @@ schema in the target database instance."
         (throw (Exception. (str "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))))))
 
 
-(defn- conn-assoc-schema [ conn schema]
+(defn- conn-assoc-schema [ conn schema ]
   "Add a sql-file schema to the connection map."
   (assoc conn
     :sql-file-schemas
@@ -156,14 +156,10 @@ are present in the target database."
 
 ;; Public Entry points
 
-(defn open-sql-file [ conn schemas ]
+(defn open-sql-file [ conn schema ]
   "Open a database file with the given connection map, and ensure that
 the specified schema is available within that database."
-  (let [ conn (reduce (fn [ conn schema ]
-                        (conn-assoc-schema conn schema))
-                      conn
-
-                      schemas) ]
+  (let [ conn (conn-assoc-schema conn schema) ]
     (log/info "Opening sql-file:" conn)
     (conn-ensure-schemas conn)))
 

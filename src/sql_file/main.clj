@@ -32,6 +32,6 @@
   (jdbc/with-db-connection [ conn (core/open-sql-file (if memory-db?
                                                         (core/hsqldb-memory-conn "test-db")
                                                         (core/hsqldb-file-conn "test-db"))
-                                                      [["test" 0]])]
+                                                      ["test" 0])]
     (log/info "Conn: " conn))
   (log/info "end run."))
