@@ -26,4 +26,3 @@ CREATE CACHED TABLE test_point (
   y INT NOT NULL
 );
 
-CREATE bad

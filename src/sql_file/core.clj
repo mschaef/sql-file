@@ -71,7 +71,7 @@ was successful."
       (log/error ex "Error running script: " script-url)
       false)))
 
-(defn- get-schema-version [ conn schema-name ]
+(defn get-schema-version [ conn schema-name ]
   "Retrieves the current version of a schema within a database managed
 by sql-file. If there is no such schema, this function returns nil. If
 the version cannot be identified due to an exception an error message
@@ -87,7 +87,7 @@ is logged with the stack trace and the function returns nil."
                    schema-name)) 
       nil)))
 
-(defn- set-schema-version! [ conn schema-name req-schema-version ]
+(defn set-schema-version! [ conn schema-name req-schema-version ]
   "Sets the version of a schema within a database managed by
 sql-file."
   (if-let [ cur-schema-version (get-schema-version conn schema-name) ]
