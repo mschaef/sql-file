@@ -28,9 +28,6 @@
             [clojure.java.jdbc :as jdbc]
             [sql-file.script :as script]))
 
-(defn- fail [ & args ]
-  (throw (Exception. (apply str args))))
-
 (defn- locate-schema-script [ conn basename ]
   (or (some identity
             (map (fn [ prefix ]
@@ -119,11 +116,19 @@ of a database schema to the requested version."
       (safe-run-script conn (schema-migrate-script conn [ schema-name to-version ]))
       (set-schema-version! conn schema-name to-version))))
 
+(defn- conn-assoc-schema [ conn schema ]
+  "Add a sql-file schema to the connection map."
+  (assoc conn
+    :sql-file-schemas
+    (conj (get conn :sql-file-schemas [])
+          schema)))
+
 (defn- ensure-schema [ conn schema ]
   "Locate and run the scripts necessary to install the specified
 schema in the target database instance."
   (log/debug "Ensuring schema:" schema)
-  (let [[req-schema-name req-schema-version] schema
+  (let [conn (conn-assoc-schema conn schema)
+        [req-schema-name req-schema-version] schema
         cur-schema-version (get-schema-version conn req-schema-name)]
       (cond
         (nil? cur-schema-version)
@@ -136,26 +141,9 @@ schema in the target database instance."
         (migrate-schema conn req-schema-name cur-schema-version req-schema-version)
 
         :else
-        (fail "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))))
+        (fail "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))
+      conn))
 
-
-(defn- conn-assoc-schema [ conn schema ]
-  "Add a sql-file schema to the connection map."
-  (assoc conn
-    :sql-file-schemas
-    (conj (get conn :sql-file-schemas [["sql-file" 0]])
-          schema)))
-
-(defn- conn-ensure-schemas [ conn ]
-  "Ensure that the sql-file schemas defined within the connection map
-are present in the target database."
-  (let [ req-schemas (:sql-file-schemas conn)]
-    (log/debug "Ensuring requested schemas:" req-schemas)
-    (reduce (fn [ conn schema ]
-              (ensure-schema conn schema)
-              conn)
-            conn
-            req-schemas)))
 
 ;; Public Entry points
 
@@ -164,7 +152,9 @@ are present in the target database."
 the specified schema is available within that database."
   (let [ conn (conn-assoc-schema conn schema) ]
     (log/info "Opening sql-file:" conn)
-    (conn-ensure-schemas conn)))
+    (-> conn
+        (ensure-schema [ "sql-file" 0])
+        (ensure-schema schema))))
 
 ;; HSQLDB Specific
 
