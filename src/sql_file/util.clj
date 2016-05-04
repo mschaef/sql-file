@@ -23,6 +23,9 @@
 
 (ns sql-file.util)
 
+(defn fail [ & args ]
+  (throw (Exception. (apply str args))))
+
 (defmacro unless [ guard & body ]
   "Evaluate the body of the form, only if the guard evaluates to
 false. The return value is the return value of the last body form, or

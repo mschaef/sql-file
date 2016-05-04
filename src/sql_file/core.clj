@@ -28,6 +28,9 @@
             [clojure.java.jdbc :as jdbc]
             [sql-file.script :as script]))
 
+(defn- fail [ & args ]
+  (throw (Exception. (apply str args))))
+
 (defn- locate-schema-script [ conn basename ]
   (or (some identity
             (map (fn [ prefix ]
@@ -35,7 +38,7 @@
                      (log/debug "Checking for script:" script-path)
                      (clojure.java.io/resource script-path)))
                  (conj (get conn :script-prefixes []) "")))
-      (throw (Exception. (str "Cannot find resource script: " basename)))))
+      (fail "Cannot find resource script: " basename)))
 
 (defn- schema-install-script [ conn schema ]
   "Locate the schema script to install the given schema name and
@@ -133,7 +136,7 @@ schema in the target database instance."
         (migrate-schema conn req-schema-name cur-schema-version req-schema-version)
 
         :else
-        (throw (Exception. (str "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))))))
+        (fail "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))))
 
 
 (defn- conn-assoc-schema [ conn schema ]
