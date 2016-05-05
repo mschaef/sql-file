@@ -37,7 +37,7 @@
 
   :jvm-opts ["-Djava.util.logging.config.file=logging.properties" ]
 
-  :dependencies [[org.clojure/clojure "1.6.0"]
-                 [org.hsqldb/hsqldb "2.3.2"]
-                 [org.clojure/java.jdbc "0.3.5"]
+  :dependencies [[org.clojure/clojure "1.8.0"]
+                 [org.hsqldb/hsqldb "2.3.3"]
+                 [org.clojure/java.jdbc "0.5.8"]
                  [org.clojure/tools.logging "0.3.1"]])
