@@ -21,7 +21,7 @@
 ;;
 ;; You must not remove this notice, or any other, from this software.
 
-(defproject sql-file "0.1.1"
+(defproject sql-file "0.2.0-pre0"
 
   :description "Library for managing data files used by embedded databases."
 
