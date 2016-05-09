@@ -51,7 +51,7 @@ version n, where n=to-version."
 (defn- run-script [ conn script-url ]
   "Run the database script at the given URL against a specific
 database connection."
-  (log/debug "Run script" script-url)
+  (log/debug "Run script:" script-url)
   (let [ script-text (slurp script-url) ]
     (do-statements conn (script/sql-statements script-text))))
 
@@ -60,12 +60,12 @@ database connection."
 database connection. Exceptions will be logged and a boolean value
 will be returned that indicates whether or not the script execution
 was successful."
-  (log/debug "Safe run script" script-url)
+  (log/debug "Safe run script:" script-url)
   (try
     (run-script conn script-url)
     true
     (catch Exception ex
-      (log/error ex "Error running script: " script-url)
+      (log/error ex "Error running script:" script-url)
       false)))
 
 (defn get-schema-version [ conn schema-name ]
@@ -80,8 +80,7 @@ is logged with the stack trace and the function returns nil."
                         schema-name])
     (catch Exception ex
       (when (log/enabled? :debug)
-        (log/error ex "Error while attempting to identify version of schema: "
-                   schema-name)) 
+        (log/error ex "Error while attempting to identify version of schema:" schema-name)) 
       nil)))
 
 (defn set-schema-version! [ conn schema-name req-schema-version ]
@@ -132,7 +131,7 @@ schema in the target database instance."
         (install-schema conn schema)
 
         (= cur-schema-version req-schema-version)
-        (log/debug "Schema" req-schema-name "version" req-schema-version "confirmed present.")
+        (log/debug "Schema" schema "confirmed present.")
 
         (< cur-schema-version req-schema-version)
         (migrate-schema conn req-schema-name cur-schema-version req-schema-version)
