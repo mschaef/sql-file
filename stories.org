@@ -2,7 +2,14 @@
 ** There is a way to set a directory prefix for the schema file scan.
 ** The scheme operation error message includes the line number of the failing statement.
 ** There is support for some kind of connection pooling, in order to avoid open/closee
+** There is the ability to request installation and migrations of schemas from within schema scripts.
+   Special case handling within a schema script. Something like this
+
+   @(ensure [ "schema-name" 0 ])
 ** Logging of the times associated with schema operations
+   Separate table with schema name, version, and begin/end time of the
+   operation that caused that schema version to be present. SHA1 hash
+   of schema script?
 * Completed
 ** SQL Utilities are exported from sql-file.util
 ** An error message is logged at error level if a schema operation fails.
