@@ -31,10 +31,10 @@
 (defn- locate-schema-script [ conn basename ]
   (or (some identity
             (map (fn [ prefix ]
-                   (let [ script-path (format "%s%s" prefix basename)]
+                   (let [ script-path (format "%s/%s" prefix basename)]
                      (log/debug "Checking for script:" script-path)
                      (clojure.java.io/resource script-path)))
-                 (conj (get conn :script-prefixes []) "")))
+                 (conj (get conn :schema-path []) ".")))
       (fail "Cannot find resource script: " basename)))
 
 (defn- schema-install-script [ conn schema ]
