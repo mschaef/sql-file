@@ -30,12 +30,9 @@
 
 (defn- locate-schema-script [ conn basename ]
   (or (some identity
-            (map (fn [ prefix ]
-                   (let [ script-path (format "%s%s" prefix basename)]
-                     (log/debug "Checking for script:" script-path)
-                     (clojure.java.io/resource script-path)))
-                 (conj (get conn :schema-path []) "")))
-      (fail "Cannot find resource script: " basename)))
+            (map #(clojure.java.io/resource (format "%s%s" % basename))
+                 (:schema-path conn)))
+      (fail "Cannot find resource script: " basename " in search path " (:schema-path conn))))
 
 (defn- schema-install-script [ conn schema ]
   "Locate the schema script to install the given schema name and
@@ -144,17 +141,20 @@ schema in the target database instance."
         (fail "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))
       conn))
 
+(defn normalize-schema-path [ conn ]
+  (assoc conn :schema-path
+         (conj (get conn :schema-path []) "")))
 
 ;; Public Entry points
 
 (defn open-sql-file [ conn schema ]
   "Open a database file with the given connection map, and ensure that
 the specified schema is available within that database."
-  (let [ conn (conn-assoc-schema conn schema) ]
-    (log/info "Opening sql-file:" conn)
-    (-> conn
-        (ensure-schema [ "sql-file" 0])
-        (ensure-schema schema))))
+  (log/info "Opening sql-file:" conn "with schema:" schema)
+  (-> conn
+      normalize-schema-path
+      (ensure-schema [ "sql-file" 0 ])
+      (ensure-schema schema)))
 
 ;; HSQLDB Specific
 
