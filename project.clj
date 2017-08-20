@@ -21,7 +21,7 @@
 ;;
 ;; You must not remove this notice, or any other, from this software.
 
-(defproject sql-file "0.2.0-pre0"
+(defproject sql-file "0.2.0-pre1"
 
   :description "Library for managing data files used by embedded databases."
 
@@ -38,6 +38,6 @@
   :jvm-opts ["-Djava.util.logging.config.file=logging.properties" ]
 
   :dependencies [[org.clojure/clojure "1.8.0"]
-                 [org.hsqldb/hsqldb "2.3.3"]
-                 [org.clojure/java.jdbc "0.5.8"]
-                 [org.clojure/tools.logging "0.3.1"]])
+                 [org.hsqldb/hsqldb "2.4.0"]
+                 [org.clojure/java.jdbc "0.7.0"]
+                 [org.clojure/tools.logging "0.4.0"]])
