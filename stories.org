@@ -1,4 +1,7 @@
 * Pending
+** BUG - Attempting to create a database only works if there is a create script for that version
+   There isn't a way for sql-file to use a combination of create and migrate
+   scripts to reach a specific version of a schema.
 ** There is a way to set a directory prefix for the schema file scan.
 ** The scheme operation error message includes the line number of the failing statement.
 ** There is support for some kind of connection pooling, in order to avoid open/closee
