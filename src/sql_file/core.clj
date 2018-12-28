@@ -40,14 +40,6 @@ version. If there is no such script, throws an exception."
   (let [[ schema-name schema-version ] schema]
     (locate-schema-script conn (format "schema-%s-%s.sql" schema-name schema-version))))
 
-(defn- schema-migrate-script [ conn schema ]
-  "Locate the schema migration script for the given schema name and
-to-version. If there is no such script, throws an exception. The
-migration script is expected to migrate the schema from version n-1 to
-version n, where n=to-version."
-  (let [ [ schema-name schema-to-version ] schema ]
-    (locate-schema-script conn (format "schema-%s-migrate-to-%s.sql" schema-name schema-to-version))))
-
 (defn- run-script [ conn script-url ]
   "Run the database script at the given URL against a specific
 database connection."
@@ -103,15 +95,6 @@ schema in the target database instance."
     (safe-run-script conn (schema-install-script conn schema))
     (set-schema-version! conn schema-name schema-version)))
 
-(defn- migrate-schema [ conn schema-name cur-schema-version req-schema-version ]
-  "Locate and run the script necessary to migrate the currently installed version
-of a database schema to the requested version."
-  (log/info "Upgrading schema" schema-name "from version" cur-schema-version "to" req-schema-version)
-  (doseq [ from-version (range cur-schema-version req-schema-version )]
-    (let [ to-version (+ from-version 1) ]
-      (safe-run-script conn (schema-migrate-script conn [ schema-name to-version ]))
-      (set-schema-version! conn schema-name to-version))))
-
 (defn- conn-assoc-schema [ conn schema ]
   "Add a sql-file schema to the connection map."
   (assoc conn
@@ -124,21 +107,17 @@ of a database schema to the requested version."
 schema in the target database instance."
   (log/debug "Ensuring schema:" schema)
   (let [conn (conn-assoc-schema conn schema)
-        [req-schema-name req-schema-version] schema
-        cur-schema-version (get-schema-version conn req-schema-name)]
-      (cond
-        (nil? cur-schema-version)
-        (install-schema conn schema)
-
-        (= cur-schema-version req-schema-version)
-        (log/debug "Schema" schema "confirmed present.")
-
-        (< cur-schema-version req-schema-version)
-        (migrate-schema conn req-schema-name cur-schema-version req-schema-version)
-
-        :else
-        (fail "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))
-      conn))
+        [req-schema-name req-schema-version] schema]
+    (loop []
+      (let [cur-schema-version (or (get-schema-version conn req-schema-name) -1)]
+        (if (= cur-schema-version req-schema-version)
+          (log/debug "Schema" schema "confirmed present.")
+          (do
+            (if (< cur-schema-version req-schema-version)
+              (install-schema conn [req-schema-name (+ cur-schema-version 1)])
+              (fail "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))
+            (recur)))))
+    conn))
 
 (defn normalize-schema-path [ conn ]
   (assoc conn :schema-path

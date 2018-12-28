@@ -16,6 +16,18 @@
       (is (= 0 (query-scalar conn (str "SELECT schema_version FROM SQL_FILE_SCHEMA"
                                        "  WHERE schema_name='test'")))))))
 
+(deftest create-and-upgrade-memory-database
+  (jdbc/with-db-connection [ conn (core/open-sql-file (core/hsqldb-memory-conn "test-db") [ "test" 1 ])]
+    (testing "schema versions are reachable via API and correct."
+      (is (= 0 (core/get-schema-version conn "sql-file")))
+      (is (= 1 (core/get-schema-version conn "test"))))
+
+    (testing "schema versions are reachable via JDBC and correct."
+      (is (= 0 (query-scalar conn (str "SELECT schema_version FROM SQL_FILE_SCHEMA"
+                                       "  WHERE schema_name='sql-file'"))))
+      (is (= 2 (query-scalar conn (str "SELECT schema_version FROM SQL_FILE_SCHEMA"
+                                       "  WHERE schema_name='test'")))))))
+
 (deftest set-schema-version
   (jdbc/with-db-connection [ conn (core/open-sql-file (core/hsqldb-memory-conn "test-db") [ "test" 0 ]) ]
     (testing "missing schema is missing"

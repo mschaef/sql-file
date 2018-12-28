@@ -40,4 +40,5 @@
   :dependencies [[org.clojure/clojure "1.8.0"]
                  [org.hsqldb/hsqldb "2.4.0"]
                  [org.clojure/java.jdbc "0.7.0"]
+                 [yesql "0.5.3"]
                  [org.clojure/tools.logging "0.4.0"]])

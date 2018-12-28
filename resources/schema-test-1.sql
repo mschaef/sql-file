@@ -17,14 +17,9 @@
 --
 -- You must not remove this notice, or any other, from this software.
 
--- schema-test-1.sql
+-- schema-test-migrate-to-1.sql
 --
--- Schema version 1 for test purposes.
-
-CREATE CACHED TABLE test_point (
-  x INT NOT NULL,
-  y INT NOT NULL
-);
+-- Migration script to upgrade test schema to version 1
 
 CREATE CACHED TABLE test_3point (
   x INT NOT NULL,
