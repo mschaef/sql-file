@@ -1,28 +1,19 @@
 (ns sql-file.script-test
   (:use clojure.test
         sql-file.util)
-  (:require [sql-file.script :as script]))
-
-(deftest at-sql-comment?
-  (testing "Can identify comment"
-    (is (script/at-sql-comment? "--foo"))
-    (is (script/at-sql-comment? "-- foo \n")))
-
-  (testing "Can identify non comment"
-    (is (not (script/at-sql-comment? " --foo")))
-    (is (not (script/at-sql-comment? "foo")))
-    (is (not (script/at-sql-comment? "\"foo\"")))))
-
-(deftest sql-skip-comment
-  (testing "Can skip comment"
-    (is (empty? (script/sql-skip-comment "-- no-newline")))
-    (is (= \* (first (script/sql-skip-comment "-- comment\n*"))))))
+  (:require [sql-file.script :as script]
+            [clojure.tools.reader.reader-types :as rdr]))
 
 (defn- sql-remaining [ sql ]
-  (apply str (first (script/sql-read-string sql))))
+  (let [in (rdr/source-logging-push-back-reader sql)
+        buf (StringBuffer.)]
+    (script/sql-read-string in)
+    (while (not (nil? (rdr/peek-char in)))
+      (.append buf (rdr/read-char in)))
+    (.toString buf)))
 
 (defn- sql-string-literal [ sql ]
-  (second (script/sql-read-string sql)))
+  (script/sql-read-string (rdr/source-logging-push-back-reader sql)))
 
 (deftest sql-read-string
   (testing "Can read SQL strings and produce correct literal tokens"
@@ -38,9 +29,7 @@
     (is (= "*" (sql-remaining "'test'*")))
     (is (= "*" (sql-remaining "'-- embedded comment'*")))
     (is (= "" (sql-remaining "'partial")))
-
     (is (= "*" (sql-remaining "'quot''d'*")))
-
     (is (= "*" (sql-remaining "''''''*")))))
 
 (deftest sql-statements 

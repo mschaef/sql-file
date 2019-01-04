@@ -25,7 +25,7 @@
     (testing "schema versions are reachable via JDBC and correct."
       (is (= 0 (query-scalar conn (str "SELECT schema_version FROM SQL_FILE_SCHEMA"
                                        "  WHERE schema_name='sql-file'"))))
-      (is (= 2 (query-scalar conn (str "SELECT schema_version FROM SQL_FILE_SCHEMA"
+      (is (= 1 (query-scalar conn (str "SELECT schema_version FROM SQL_FILE_SCHEMA"
                                        "  WHERE schema_name='test'")))))))
 
 (deftest set-schema-version
@@ -40,10 +40,9 @@
                                         "  WHERE schema_name='ssv-test'")))))
 
     (testing "set-schema-version! on present schema")
-    (core/set-schema-version! conn "ssv-test-2" 1)
     (core/set-schema-version! conn "ssv-test-2" 2)
-      (is (= 2 (query-scalar conn (str "SELECT schema_version FROM SQL_FILE_SCHEMA"
-                                        "  WHERE schema_name='ssv-test-2'"))))))
+    (is (= 2 (query-scalar conn (str "SELECT schema_version FROM SQL_FILE_SCHEMA"
+                                     "  WHERE schema_name='ssv-test-2'"))))))
 
 
 
