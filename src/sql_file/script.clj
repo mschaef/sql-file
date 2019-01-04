@@ -25,10 +25,13 @@
   "Utility functions for processing SQL scripts."
   (:require [clojure.tools.reader.reader-types :as rdr]))
 
-(defn at-sql-comment? [ sql ]
-  "Determine if a sequence of characters is located at a SQL
-comment (identified by two leading hypens')"
-  (and (= \- (first sql)) (= \- (second sql))))
+(defn sql-skip-whitespace [ in ]
+  "Skip to the next non-whitespace character in the given input
+  stream and return that character"
+  (while (let [ch (rdr/peek-char in)]
+           (and ch (Character/isWhitespace ch)))
+    (rdr/read-char in))
+  (rdr/peek-char in))
 
 (defn sql-skip-comment [ in ]
   "Skip a SQL comment, returning a the sequence of characters
@@ -59,38 +62,49 @@ that the returned literal is well-formed."
             (.toString (.append lit-buf ch)))
           (recur (.append lit-buf ch)))))))
 
+(defn- ensure-whitespace [ buf ]
+  "Ensure there's at least a single character of whitespace at the end
+  of the given buffer."
+  (if (and (> (.length buf) 0)
+           (not (Character/isWhitespace (.charAt buf (- (.length buf) 1)))))
+    (.append buf \space)
+    buf))
+
+(defn sql-read-statement [ in ]
+  (sql-skip-whitespace in)
+  (loop [stmt-buf (StringBuffer.)]
+    (let [ ch (rdr/peek-char in) ]
+      (case ch
+        \'
+        (recur (.append stmt-buf (sql-read-string in)))
+
+        \-
+        (do
+          (rdr/read-char in)
+          (if (optional-char in \-)
+            (do
+              (sql-skip-comment in)
+              (recur stmt-buf))
+            (recur (.append stmt-buf \-))))
+          
+        (nil \;)
+        (do
+          (rdr/read-char in)
+          (.toString stmt-buf))
+
+        (if (Character/isWhitespace ch)
+          (do
+            (rdr/read-char in)
+            (recur (ensure-whitespace stmt-buf)))
+          (recur (.append stmt-buf (rdr/read-char in))))))))
+
 (defn sql-statements [ sql ]
   "Given a sequence of characters corresponding to a SQL script,
 return a sequence of the SQL statements contained in that script."
   (let [in (rdr/source-logging-push-back-reader sql)]
     (remove #(= 0 (.length %))
-            (loop [stmt-buf (StringBuffer.)
-                   stmts []]
-              (if (nil? (rdr/peek-char in))
-                (conj stmts (.trim (.toString stmt-buf)))
-                (let [ ch (rdr/peek-char in) ]
-                  (case ch
-                    \'
-                    (recur (.append stmt-buf (sql-read-string in)) stmts)
-                    
-                    \;
-                    (do
-                      (rdr/read-char in)
-                      (recur (StringBuffer.) (conj stmts (.trim (.toString stmt-buf)))))
-
-                    \-
-                    (do
-                      (rdr/read-char in)
-                      (if (optional-char in \-)
-                        (do
-                          (sql-skip-comment in)
-                          (recur (StringBuffer.) (conj stmts (.trim (.toString stmt-buf)))))
-                        (recur (.append stmt-buf \-) stmts)))
-                    
-                    \newline
-                    (do
-                      (rdr/read-char in)
-                      (recur (.append stmt-buf \space) stmts))
-                    
-                    (recur (.append stmt-buf (rdr/read-char in)) stmts))))))))
+            (loop [stmts []]
+              (if (nil? (sql-skip-whitespace in))
+                stmts
+                (recur (conj stmts (sql-read-statement in))))))))
 
