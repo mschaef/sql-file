@@ -45,7 +45,7 @@ version. If there is no such script, throws an exception."
 database connection."
   (log/debug "Run script:" script-url)
   (let [ script-text (slurp script-url) ]
-    (do-statements conn (script/sql-statements script-text))))
+    (do-statements conn (map :statement (script/sql-statements script-text)))))
 
 (defn- safe-run-script [ conn script-url ]
   "Safely run the database script at the given URL against a specific

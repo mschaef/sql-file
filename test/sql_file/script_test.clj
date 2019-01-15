@@ -40,23 +40,23 @@
     (is (empty? (script/sql-statements "--comments only\n\n--foo\n"))))
 
   (testing "Statement delimiter processing"
-    (is (= ["1"]
+    (is (= [{:line 1, :column 1, :statement "1"}]
            (script/sql-statements "1;")))
-    (is (= ["1" "2"]
+    (is (= [{:line 1, :column 1, :statement "1"} {:line 1, :column 3, :statement "2"}]
            (script/sql-statements "1;2")))
-    (is (= ["1" "2"]
+    (is (= [{:line 1, :column 1, :statement "1"} {:line 1, :column 3, :statement "2"}]
            (script/sql-statements "1;2;")))
-    (is (= ["1"]
+    (is (= [{:line 1, :column 1, :statement "1"}]
            (script/sql-statements "1;--2;")))
-    (is (= ["1" "2';'3"]
+    (is (=  [{:line 1, :column 1, :statement "1"} {:line 1, :column 3, :statement "2';'3"}]
            (script/sql-statements "1;2';'3;"))))
 
   (testing "newline processing"
-    (is (= ["1"]
+    (is (= [{:line 1, :column 1, :statement "1"}]
            (script/sql-statements "1;\n;")))
-    (is (= ["1 2"]
+    (is (= [{:line 1, :column 1, :statement "1 2"}]
            (script/sql-statements "1\n2;")))
-    (is (= ["1 2"]
+    (is (= [{:line 1, :column 1, :statement "1 2"}]
            (script/sql-statements "1\n\n2;"))))
-    (is (= ["1 2" "3 4"]
+    (is (= [{:line 1, :column 1, :statement "1 2"} {:line 2, :column 3, :statement "3 4"}]
            (script/sql-statements "1\n2;3\n4;"))))

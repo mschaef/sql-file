@@ -72,39 +72,43 @@ that the returned literal is well-formed."
 
 (defn sql-read-statement [ in ]
   (sql-skip-whitespace in)
-  (loop [stmt-buf (StringBuffer.)]
-    (let [ ch (rdr/peek-char in) ]
-      (case ch
-        \'
-        (recur (.append stmt-buf (sql-read-string in)))
+  (let [ stmt { :line (rdr/get-line-number in) :column (rdr/get-column-number in) }]
+    (loop [stmt-buf (StringBuffer.)]
+      (let [ ch (rdr/peek-char in) ]
+        (case ch
+          \'
+          (recur (.append stmt-buf (sql-read-string in)))
 
-        \-
-        (do
-          (rdr/read-char in)
-          (if (optional-char in \-)
-            (do
-              (sql-skip-comment in)
-              (recur stmt-buf))
-            (recur (.append stmt-buf \-))))
-          
-        (nil \;)
-        (do
-          (rdr/read-char in)
-          (.toString stmt-buf))
-
-        (if (Character/isWhitespace ch)
+          \-
           (do
             (rdr/read-char in)
-            (recur (ensure-whitespace stmt-buf)))
-          (recur (.append stmt-buf (rdr/read-char in))))))))
+            (if (optional-char in \-)
+              (do
+                (sql-skip-comment in)
+                (recur stmt-buf))
+              (recur (.append stmt-buf \-))))
+          
+          (nil \;)
+          (do
+            (rdr/read-char in)
+            (if (> (.length stmt-buf) 0)
+              (assoc stmt :statement (.toString stmt-buf))
+              nil))
+
+          (if (Character/isWhitespace ch)
+            (do
+              (rdr/read-char in)
+              (recur (ensure-whitespace stmt-buf)))
+            (recur (.append stmt-buf (rdr/read-char in)))))))))
 
 (defn sql-statements [ sql ]
   "Given a sequence of characters corresponding to a SQL script,
 return a sequence of the SQL statements contained in that script."
   (let [in (rdr/source-logging-push-back-reader sql)]
-    (remove #(= 0 (.length %))
-            (loop [stmts []]
-              (if (nil? (sql-skip-whitespace in))
-                stmts
-                (recur (conj stmts (sql-read-statement in))))))))
+    (loop [stmts []]
+      (if (nil? (sql-skip-whitespace in))
+        stmts
+        (recur (if-let [ stmt (sql-read-statement in)]
+                 (conj stmts stmt)
+                 stmts))))))
 
