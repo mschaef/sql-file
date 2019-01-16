@@ -47,19 +47,6 @@ database connection."
   (let [ script-text (slurp script-url) ]
     (do-statements conn (map :statement (script/sql-statements script-text)))))
 
-(defn- safe-run-script [ conn script-url ]
-  "Safely run the database script at the given URL against a specific
-database connection. Exceptions will be logged and a boolean value
-will be returned that indicates whether or not the script execution
-was successful."
-  (log/debug "Safe run script:" script-url)
-  (try
-    (run-script conn script-url)
-    true
-    (catch Exception ex
-      (log/error ex "Error running script:" script-url)
-      false)))
-
 (defn get-schema-version [ conn schema-name ]
   "Retrieves the current version of a schema within a database managed
 by sql-file. If there is no such schema, this function returns nil. If
@@ -92,7 +79,10 @@ sql-file."
 schema in the target database instance."
   (log/info "Installing schema:" schema)
   (let [ [schema-name schema-version ] schema ]
-    (safe-run-script conn (schema-install-script conn schema))
+    (try
+      (run-script conn (schema-install-script conn schema))
+      (catch Exception ex
+        (throw (Exception. (str "Error installing schema: " schema) ex))))
     (set-schema-version! conn schema-name schema-version)))
 
 (defn- conn-assoc-schema [ conn schema ]

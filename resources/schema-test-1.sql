@@ -17,7 +17,7 @@
 --
 -- You must not remove this notice, or any other, from this software.
 
--- schema-test-migrate-to-1.sql
+-- schema-test-1.sql
 --
 -- Migration script to upgrade test schema to version 1
 
