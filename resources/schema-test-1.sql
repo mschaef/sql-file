@@ -26,3 +26,10 @@ CREATE CACHED TABLE test_3point (
   y INT NOT NULL,
   z INT NOT NULL
 );
+
+CREATE CACHED TABLE test_4point (
+  x INT NOT NULL,
+  y INT NOT NULL,
+  z INT NOT NULL,
+  t INT NOT NULL
+);

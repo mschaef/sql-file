@@ -41,9 +41,3 @@
       (log/warn "Queries used for query-scalar should only return one field per row:" query-spec))
     (get first-row (first row-keys))))
 
-(defn do-statements [ conn stmts ]
-  "Execute a sequence of statements against the given DB connection."
-  (jdbc/with-db-connection [ cdb conn ]
-    (doseq [ stmt stmts ]
-      (log/debug "db-do-prepared:" stmt)
-      (jdbc/db-do-prepared cdb stmt))))

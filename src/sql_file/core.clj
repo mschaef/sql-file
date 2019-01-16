@@ -40,12 +40,22 @@ version. If there is no such script, throws an exception."
   (let [[ schema-name schema-version ] schema]
     (locate-schema-script conn (format "schema-%s-%s.sql" schema-name schema-version))))
 
+(defn do-statements [ conn stmts ]
+  "Execute a sequence of statements against the given DB connection."
+  (jdbc/with-db-connection [ cdb conn ]
+    (doseq [ stmt stmts ]
+      (log/error (str "db-do-prepared:" (:url stmt) "(" (:line stmt) ":" (:column stmt) ") " (:statement stmt)))
+      (try
+        (jdbc/db-do-prepared cdb (:statement stmt))
+        (catch Exception ex
+          (throw (Exception. (str "Error running statement: " stmt) ex)))))))
+
 (defn- run-script [ conn script-url ]
   "Run the database script at the given URL against a specific
 database connection."
   (log/debug "Run script:" script-url)
   (let [ script-text (slurp script-url) ]
-    (do-statements conn (map :statement (script/sql-statements script-text)))))
+    (do-statements conn (map #(assoc % :url script-url) (script/sql-statements script-text)))))
 
 (defn get-schema-version [ conn schema-name ]
   "Retrieves the current version of a schema within a database managed
