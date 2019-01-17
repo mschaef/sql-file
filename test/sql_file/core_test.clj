@@ -49,7 +49,7 @@
 
 (deftest failed-schema-execution
   (testing "Upgrade to bad script fails"
-    (is (thrown-with-msg? Exception #"Error installing schxema: \[\"test\" 2\]"
+    (is (thrown-with-msg? Exception #"Error installing schema: \[\"test\" 2\]"
                           (jdbc/with-db-connection [ conn (open-test-db [ "test" 2 ]) ]
                             ))))
 
