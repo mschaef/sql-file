@@ -44,7 +44,7 @@ version. If there is no such script, throws an exception."
   "Execute a sequence of statements against the given DB connection."
   (jdbc/with-db-connection [ cdb conn ]
     (doseq [ stmt stmts ]
-      (log/debug (str "db-do-prepared:" (:url stmt) "(" (:line stmt) ":" (:column stmt) ") " (:statement stmt)))
+      (log/debug "Executing SQL:" (str (:url stmt) "(" (:line stmt) ":" (:column stmt) ")") (:statement stmt))
       (try
         (jdbc/db-do-prepared cdb (:statement stmt))
         (catch Exception ex
