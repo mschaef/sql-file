@@ -75,32 +75,35 @@ that the returned literal is well-formed."
 
 (defn sql-read-statement [ in ]
   (sql-skip-whitespace in)
-  (let [ stmt (get-input-location in) ]
-    (loop [stmt-buf (StringBuffer.)]
-      (case (rdr/peek-char in) 
-        \-
-        (do
+  (loop [stmt-buf (StringBuffer.)
+         loc nil]
+    (case (rdr/peek-char in) 
+      \-
+      (do
+        (let [ comment-loc (get-input-location in) ]
           (rdr/read-char in)
           (if (optional-char in \-)
             (do
               (sql-skip-comment in)
-              (recur stmt-buf))
-            (recur (.append stmt-buf \-))))
-          
-        (nil \;)
-        (do
-          (rdr/read-char in)
-          (if (> (.length stmt-buf) 0)
-            (assoc stmt :statement (.toString stmt-buf))
-            nil))
+              (recur stmt-buf loc))
+            (recur (.append stmt-buf \-) (or loc comment-loc)))))
+      
+      (nil \;)
+      (do
+        (rdr/read-char in)
+        (if (> (.length stmt-buf) 0)
+          (assoc loc :statement (.toString stmt-buf))
+          nil))
+      
+      \'
+      (let [ str-loc (get-input-location in) ]
+        (recur (.append stmt-buf (sql-read-string in)) (or loc str-loc)))
 
-        \'
-        (recur (.append stmt-buf (sql-read-string in)))
-
-        (let [ ch (rdr/read-char in) ]
-          (if (Character/isWhitespace ch)
-            (recur (ensure-whitespace stmt-buf))
-            (recur (.append stmt-buf ch))))))))
+      (let [ch-loc (get-input-location in)
+            ch (rdr/read-char in) ]
+        (if (Character/isWhitespace ch)
+          (recur (ensure-whitespace stmt-buf) loc)
+          (recur (.append stmt-buf ch) (or loc ch-loc)))))))
 
 (defn sql-statements [ sql ]
   "Given a sequence of characters corresponding to a SQL script,
