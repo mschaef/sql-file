@@ -42,6 +42,8 @@
   (testing "Statement delimiter processing"
     (is (= [{:line 1, :column 1, :statement "1"}]
            (script/sql-statements "1;")))
+    (is (= [{:line 1, :column 3, :statement "1"}]
+           (script/sql-statements "  1;")))    
     (is (= [{:line 1, :column 1, :statement "1"} {:line 1, :column 3, :statement "2"}]
            (script/sql-statements "1;2")))
     (is (= [{:line 1, :column 1, :statement "1"} {:line 1, :column 3, :statement "2"}]
@@ -52,6 +54,10 @@
            (script/sql-statements "1;2';'3;"))))
 
   (testing "newline processing"
+    (is (= [{:line 3, :column 1, :statement "1"}]
+           (script/sql-statements "\n\n1;")))
+    (is (= [{:line 3, :column 1, :statement "1"}]
+           (script/sql-statements "-- comment \n -- comment \n1;")))
     (is (= [{:line 1, :column 1, :statement "1"}]
            (script/sql-statements "1;\n;")))
     (is (= [{:line 1, :column 1, :statement "1 2"}]
