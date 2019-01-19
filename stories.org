@@ -1,9 +1,5 @@
 * Pending
-** BUG - Attempting to create a database only works if there is a create script for that version
-   There isn't a way for sql-file to use a combination of create and migrate
-   scripts to reach a specific version of a schema.
 ** There is a way to set a directory prefix for the schema file scan.
-** The scheme operation error message includes the line number of the failing statement.
 ** There is support for some kind of connection pooling, in order to avoid open/closee
 ** There is the ability to request installation and migrations of schemas from within schema scripts.
    Special case handling within a schema script. Something like this
@@ -14,6 +10,7 @@
    operation that caused that schema version to be present. SHA1 hash
    of schema script?
 * Completed
+** The scheme operation error message includes the line number of the failing statement.
 ** SQL Utilities are exported from sql-file.util
 ** An error message is logged at error level if a schema operation fails.
 ** There is a way to open a database file that avoids the requirement to verify the schema
@@ -27,3 +24,6 @@
    (defmacro with-db-connection [ & body ]
      `(binding [ *db* @db-connection ]
         ~@body))
+** BUG - Attempting to create a database only works if there is a create script for that version
+   There isn't a way for sql-file to use a combination of create and migrate
+   scripts to reach a specific version of a schema.
