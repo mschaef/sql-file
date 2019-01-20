@@ -21,11 +21,12 @@
 ;;
 ;; You must not remove this notice, or any other, from this software.
 
-(defproject sql-file "0.3.0-SNAPSHOT"
+(defproject com.mschaef/sql-file "0.3.0-SNAPSHOT"
 
-  :description "Library for managing data files used by embedded databases."
+  :description "One stop shopping for embedding an HSQLDB database and managing schemas for same."
 
-  :url "http://www.mschaef.com/"
+  :url "https://github.com/mschaef/sql-file"
+  
   :license {:name "The Apache Software License, Version 2.0"
             :url "http://www.apache.org/licenses/LICENSE-2.0"}
 
