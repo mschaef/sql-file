@@ -43,10 +43,10 @@
                  [org.clojure/java.jdbc "0.7.8"]
                  [org.clojure/tools.logging "0.4.1"]
                  [org.clojure/tools.reader "1.3.2"]]
-  
-  :deploy-repositories [["releases"  {:sign-releases false :url "https://clojars.org"}]
-                        ["snapshots" {:sign-releases false :url "https://clojars.org"}]]
 
+  :deploy-repositories [["releases" :clojars]
+                        ["snapshots" :clojars]]
+  
   :release-tasks [["vcs" "assert-committed"]
                   ["change" "version" "leiningen.release/bump-version" "release"]
                   ["vcs" "commit"]
