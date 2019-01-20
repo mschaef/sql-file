@@ -42,4 +42,14 @@
                  [org.hsqldb/hsqldb "2.4.1"]
                  [org.clojure/java.jdbc "0.7.8"]
                  [org.clojure/tools.logging "0.4.1"]
-                 [org.clojure/tools.reader "1.3.2"]])
+                 [org.clojure/tools.reader "1.3.2"]]
+
+
+  :release-tasks [["vcs" "assert-committed"]
+                  ["change" "version" "leiningen.release/bump-version" "release"]
+                  ["vcs" "commit"]
+                  ["vcs" "tag" "--no-sign"]
+                  ["deploy" "clojars"]
+                  ["change" "version" "leiningen.release/bump-version"]
+                  ["vcs" "commit"]
+                  ["vcs" "push"]])
