@@ -28,11 +28,14 @@
             [clojure.java.jdbc :as jdbc]
             [sql-file.script :as script]))
 
+(defn- schema-path [ conn ]
+  (conj (get conn :schema-path []) ""))
+
 (defn- locate-schema-script [ conn basename ]
   (or (some identity
             (map #(clojure.java.io/resource (format "%s%s" % basename))
-                 (:schema-path conn)))
-      (fail "Cannot find resource script: " basename " in search path " (:schema-path conn))))
+                 (schema-path conn)))
+      (fail "Cannot find resource script: " basename " in search path " (schema-path conn))))
 
 (defn- schema-install-script [ conn schema ]
   "Locate the schema script to install the given schema name and
@@ -95,19 +98,11 @@ schema in the target database instance."
         (throw (Exception. (str "Error installing schema: " schema) ex))))
     (set-schema-version! conn schema-name schema-version)))
 
-(defn- conn-assoc-schema [ conn schema ]
-  "Add a sql-file schema to the connection map."
-  (assoc conn
-    :sql-file-schemas
-    (conj (get conn :sql-file-schemas [])
-          schema)))
-
-(defn- ensure-schema [ conn schema ]
+(defn ensure-schema [ conn schema ]
   "Locate and run the scripts necessary to install the specified
 schema in the target database instance."
   (log/debug "Ensuring schema:" schema)
-  (let [conn (conn-assoc-schema conn schema)
-        [req-schema-name req-schema-version] schema]
+  (let [[req-schema-name req-schema-version] schema]
     (loop []
       (let [cur-schema-version (or (get-schema-version conn req-schema-name) -1)]
         (if (= cur-schema-version req-schema-version)
@@ -119,33 +114,17 @@ schema in the target database instance."
             (recur)))))
     conn))
 
-(defn normalize-schema-path [ conn ]
-  (assoc conn :schema-path
-         (conj (get conn :schema-path []) "")))
+(defn hsqldb-conn [ name ]
+  "Construct a connection map for an HSQLDB database with the given
+filename and schema. A name with a \"mem:\" prefix may be used to
+request a memory database."
+  {:classname "org.hsqldb.jdbc.JDBCDriver"
+   :subprotocol  "hsqldb"
+   :subname name})
 
 ;; Public Entry points
 
-(defn open-sql-file [ conn schema ]
-  "Open a database file with the given connection map, and ensure that
-the specified schema is available within that database."
-  (log/info "Opening sql-file:" conn "with schema:" schema)
-  (-> conn
-      normalize-schema-path
-      (ensure-schema [ "sql-file" 0 ])
-      (ensure-schema schema)))
-
-;; HSQLDB Specific
-
-(defn hsqldb-file-conn [ filename ]
-  "Construct a connection map for an HSQLDB database with the given
-filename and schema."
-  {:classname "org.hsqldb.jdbc.JDBCDriver"
-   :subprotocol  "hsqldb"
-   :subname filename})
-
-(defn hsqldb-memory-conn [ aname ]
-  "Construct a connection map for an in-memory HSQLDB database with
-the given aname and schema."
-  {:classname "org.hsqldb.jdbc.JDBCDriver"
-   :subprotocol  "hsqldb"
-   :subname (str "mem:" aname)})
+(defn open-local [ desc ]
+  (log/info "Opening sql-file:" desc)  
+  (-> (assoc (hsqldb-conn (:name desc)) :schema-path (:schema-path desc))
+      (ensure-schema [ "sql-file" 0 ])))

@@ -29,9 +29,7 @@
 (def memory-db? false)
 
 (defn -main []
-  (jdbc/with-db-connection [ conn (core/open-sql-file (if memory-db?
-                                                        (core/hsqldb-memory-conn "test-db")
-                                                        (core/hsqldb-file-conn "test-db"))
-                                                      ["test" 1])]
+  (jdbc/with-db-connection [ conn (-> (core/open-local {:name (if memory-db? "mem:test-db" "test-db")})
+                                      (core/ensure-schema ["test" 1]))]
     (log/info "Conn: " conn))
   (log/info "end run."))

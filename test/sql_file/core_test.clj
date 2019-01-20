@@ -4,7 +4,9 @@
   (:require [sql-file.core :as core]
             [clojure.java.jdbc :as jdbc]))
 
-(def test-db (core/hsqldb-memory-conn "mem-db"))
+(def test-db-name "mem:mem-db")
+
+(def test-db (core/hsqldb-conn test-db-name))
 
 (defn- with-clean-db [ t ]
   (jdbc/with-db-connection [ conn test-db ]
@@ -14,7 +16,8 @@
 (use-fixtures :each with-clean-db)
 
 (defn- open-test-db [ schema ]
-  (core/open-sql-file test-db schema))
+  (-> (core/open-local {:name test-db-name } )
+      (core/ensure-schema schema)))
 
 (deftest create-memory-database
   (jdbc/with-db-connection [ conn (open-test-db [ "test" 0 ])]

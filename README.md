@@ -22,7 +22,7 @@ It can be added to a [Leiningen](https://leiningen.org/) project with the
 following dependency:
 
 ```clojure
-[com.mschaef/sql-file 0.3.0]
+[com.mschaef/sql-file "0.3.0"]
 ```
 
 ## Usage
