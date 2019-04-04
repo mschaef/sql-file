@@ -41,6 +41,7 @@
   :dependencies [[org.clojure/clojure "1.10.0"]
                  [org.hsqldb/hsqldb "2.4.1"]
                  [org.clojure/java.jdbc "0.7.8"]
+                 [org.slf4j/log4j-over-slf4j "1.7.26"]
                  [org.clojure/tools.logging "0.4.1"]
                  [org.clojure/tools.reader "1.3.2"]]
 
