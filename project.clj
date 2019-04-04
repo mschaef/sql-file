@@ -44,7 +44,7 @@
                  [org.slf4j/log4j-over-slf4j "1.7.26"]
                  [org.clojure/tools.logging "0.4.1"]
                  [org.clojure/tools.reader "1.3.2"]
-                 [com.jolbox/bonecp "0.8.0.RELEASE"]]
+                 [com.zaxxer/HikariCP "3.3.1"]]
 
   :deploy-repositories [["releases" {:url "https://clojars.org/repo"
                                    :creds :gpg}]]

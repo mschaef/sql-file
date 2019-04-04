@@ -133,14 +133,10 @@ request a memory database."
 (defn open-pool [ desc ]
   (log/info "Opening sql-file (pooled):" desc)  
   (let [conn (hsqldb-conn desc)
-        cpds (doto (com.jolbox.bonecp.BoneCPDataSource.)
-               (.setDriverClass (:classname conn))
+        cpds (doto (com.zaxxer.hikari.HikariDataSource.)
+               (.setDriverClassName (:classname conn))
                (.setJdbcUrl (str "jdbc:hsqldb:" (:subname conn)))
-               (.setMinConnectionsPerPartition (get desc :connections 4))
-               (.setMaxConnectionsPerPartition (get desc :connections 4))
-               (.setPartitionCount 1)
-               (.setStatisticsEnabled true)
-               (.setIdleMaxAgeInMinutes (get desc :idle-time 60)))]
+               (.setMaximumPoolSize (get desc :pool-size 4)))]
     (-> conn
         (assoc :datasource cpds)
         (ensure-schema [ "sql-file" 0]))))
