@@ -43,7 +43,8 @@
                  [org.clojure/java.jdbc "0.7.8"]
                  [org.slf4j/log4j-over-slf4j "1.7.26"]
                  [org.clojure/tools.logging "0.4.1"]
-                 [org.clojure/tools.reader "1.3.2"]]
+                 [org.clojure/tools.reader "1.3.2"]
+                 [com.jolbox/bonecp "0.8.0.RELEASE"]]
 
   :deploy-repositories [["releases" {:url "https://clojars.org/repo"
                                    :creds :gpg}]]

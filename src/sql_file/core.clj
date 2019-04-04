@@ -114,17 +114,33 @@ schema in the target database instance."
             (recur)))))
     conn))
 
-(defn hsqldb-conn [ name ]
+(defn hsqldb-conn [ desc ]
   "Construct a connection map for an HSQLDB database with the given
 filename and schema. A name with a \"mem:\" prefix may be used to
 request a memory database."
-  {:classname "org.hsqldb.jdbc.JDBCDriver"
-   :subprotocol  "hsqldb"
-   :subname name})
+  (cond-> {:classname "org.hsqldb.jdbc.JDBCDriver"
+           :subprotocol  "hsqldb"
+           :subname (:name desc)}
+    (:schema-path desc) (assoc :schema-path (:schema-path desc))))
 
 ;; Public Entry points
 
 (defn open-local [ desc ]
   (log/info "Opening sql-file:" desc)  
-  (-> (assoc (hsqldb-conn (:name desc)) :schema-path (:schema-path desc))
+  (-> (hsqldb-conn desc)
       (ensure-schema [ "sql-file" 0 ])))
+
+(defn open-pool [ desc ]
+  (log/info "Opening sql-file (pooled):" desc)  
+  (let [conn (hsqldb-conn desc)
+        cpds (doto (com.jolbox.bonecp.BoneCPDataSource.)
+               (.setDriverClass (:classname conn))
+               (.setJdbcUrl (str "jdbc:hsqldb:" (:subname conn)))
+               (.setMinConnectionsPerPartition (get desc :connections 4))
+               (.setMaxConnectionsPerPartition (get desc :connections 4))
+               (.setPartitionCount 1)
+               (.setStatisticsEnabled true)
+               (.setIdleMaxAgeInMinutes (get desc :idle-time 60)))]
+    (-> conn
+        (assoc :datasource cpds)
+        (ensure-schema [ "sql-file" 0]))))
