@@ -33,8 +33,9 @@
   :scm {:name "git"
         :url "https://github.com/mschaef/sql-file.git"}
 
-  :main sql-file.main
-  :aot [sql-file.main]
+  :profiles {:dev
+             {:main sql-file.main
+              :aot [sql-file.main]}}
 
   :jvm-opts ["-Djava.util.logging.config.file=logging.properties" ]
 
