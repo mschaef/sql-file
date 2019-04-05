@@ -98,6 +98,17 @@ schema in the target database instance."
         (throw (Exception. (str "Error installing schema: " schema) ex))))
     (set-schema-version! conn schema-name schema-version)))
 
+;; Public Entry points
+
+(defn hsqldb-conn [ desc ]
+  "Construct a connection map for an HSQLDB database with the given
+filename and schema. A name with a \"mem:\" prefix may be used to
+request a memory database."
+  (cond-> {:classname "org.hsqldb.jdbc.JDBCDriver"
+           :subprotocol  "hsqldb"
+           :subname (:name desc)}
+    (:schema-path desc) (assoc :schema-path (:schema-path desc))))
+
 (defn ensure-schema [ conn schema ]
   "Locate and run the scripts necessary to install the specified
 schema in the target database instance."
@@ -114,17 +125,6 @@ schema in the target database instance."
             (recur)))))
     conn))
 
-(defn hsqldb-conn [ desc ]
-  "Construct a connection map for an HSQLDB database with the given
-filename and schema. A name with a \"mem:\" prefix may be used to
-request a memory database."
-  (cond-> {:classname "org.hsqldb.jdbc.JDBCDriver"
-           :subprotocol  "hsqldb"
-           :subname (:name desc)}
-    (:schema-path desc) (assoc :schema-path (:schema-path desc))))
-
-;; Public Entry points
-
 (defn backup-to-file-blocking [ conn output-path ]
   (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' BLOCKING")))
 
@@ -138,12 +138,10 @@ request a memory database."
 
 (defn open-pool [ desc ]
   (log/info "Opening sql-file (pooled):" desc)  
-  (let [conn (hsqldb-conn desc)
-        cpds (doto (com.zaxxer.hikari.HikariDataSource.)
-               (.setDriverClassName (:classname conn))
-               (.setJdbcUrl (str "jdbc:hsqldb:" (:subname conn)))
-               (.setMaximumPoolSize (get desc :pool-size 4)))]
-    (-> conn
-        (assoc :datasource cpds)
-        (ensure-schema [ "sql-file" 0]))))
+  (let [conn (open-local desc)]
+    (assoc conn :datasource
+           (doto (com.zaxxer.hikari.HikariDataSource.)
+             (.setDriverClassName (:classname conn))
+             (.setJdbcUrl (str "jdbc:hsqldb:" (:subname conn)))
+             (.setMaximumPoolSize (get desc :pool-size 4))))))
 
