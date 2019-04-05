@@ -125,6 +125,12 @@ request a memory database."
 
 ;; Public Entry points
 
+(defn backup-to-file-blocking [ conn output-path ]
+  (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' BLOCKING")))
+
+(defn backup-to-file-online [ conn output-path ]
+  (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' NOT BLOCKING")))
+
 (defn open-local [ desc ]
   (log/info "Opening sql-file:" desc)  
   (-> (hsqldb-conn desc)
@@ -140,3 +146,4 @@ request a memory database."
     (-> conn
         (assoc :datasource cpds)
         (ensure-schema [ "sql-file" 0]))))
+

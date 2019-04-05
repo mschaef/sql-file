@@ -31,5 +31,7 @@
 (defn -main []
   (jdbc/with-db-connection [ conn (-> (core/open-local {:name (if memory-db? "mem:test-db" "test-db")})
                                       (core/ensure-schema ["test" 1]))]
+    (core/backup-to-file-blocking conn "./backup-db-blocking.tgz")
+    (core/backup-to-file-online conn "./backup-db-online.tgz")
     (log/info "Conn: " conn))
   (log/info "end run."))
