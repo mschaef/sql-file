@@ -22,7 +22,7 @@ It can be added to a [Leiningen](https://leiningen.org/) project with the
 following dependency:
 
 ```clojure
-[com.mschaef/sql-file "0.3.0"]
+[com.mschaef/sql-file "0.4.1"]
 ```
 
 ## Usage
@@ -33,7 +33,7 @@ Example usage:
 (require '[clojure.java.jdbc :as jdbc])
 (require '[sql-file.core :as core])
 
-(jdbc/query (core/open-sql-file (core/hsqldb-file-conn "test-db") ["test" 0])
+(jdbc/query (sql-file/open-local {:name "test-db" :schemas [ [ "test" 0 ] ]})
    ["select count(*) from point]))
 ;; 0
 ```
@@ -44,17 +44,24 @@ automatically loads version 0 of the `test` schema from
 
 ### Migrations
 
-Using a  schema version higher than  0 causes all of  scripts for that
-schema  to  be run  in  ascending  order  of version.  This statement
-requests version 2:
+`sql-file` supports automatic forward migrations of database schemas
+through the use of sequential version numbers.  To illustrate, this
+`open-local` call requests version 2 of the `test` schema.
 
 ```clojure
-    (core/open-sql-file (core/hsqldb-file-conn "test-db") ["test" 2])
+(sql-file/open-local {:name "test-db" :schemas [ [ "test" 2 ] ]})
 ```
 
-This call will result in three scripts being loaded and applied in
-succession: `resources/schema-test-0.sql`,
-`resources/schema-test-1.sql`, and finally `resources/schema-test-2.sql`.
+When opening a database, `sql-file` will compare the requested schema
+version with the version already loaded in the database. It will then
+run any necessary schema scripts in numerical order to ensure the
+requested schema is present in the database. In a new database, this
+call will result in three schema creation scripts being loaded and
+applied in succession: `resources/schema-test-0.sql`,
+`resources/schema-test-1.sql`, and finally
+`resources/schema-test-2.sql`. If the database already contains schema
+version `0`, then just `resources/schema-test-1.sql` will be run
+`resources/schema-test-2.sql`.
 
 The current version of a schema can be retrieved using
 `get-schema-version`:
@@ -89,7 +96,7 @@ I would happily accept PRs to fix these or other issues.
 
 ## License
 
-Copyright © 2015-2019 [Michael Schaeffer](http://www.mschaef.com/)
+Copyright © 2015-2021 [Michael Schaeffer](http://www.mschaef.com/)
 
 Portions Copyright © 2014 [KSM Technology Partners](https://www.ksmpartners.com/)
 
