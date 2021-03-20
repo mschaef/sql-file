@@ -29,9 +29,10 @@
 (def memory-db? false)
 
 (defn -main []
-  (jdbc/with-db-connection [ conn (-> (core/open-local {:name (if memory-db? "mem:test-db" "test-db")})
-                                      (core/ensure-schema ["test" 1]))]
-    (core/backup-to-file-blocking conn "./backup-db-blocking.tgz")
-    (core/backup-to-file-online conn "./backup-db-online.tgz")
-    (log/info "Conn: " conn))
+  (core/with-pool [ pool {:name (if memory-db? "mem:test-db" "test-db")
+                          :schemas [["test" 1]]}]
+    (jdbc/with-db-connection [ conn pool ]
+      (log/info "Conn: " conn)
+      (core/backup-to-file-blocking conn "./backup-db-blocking.tgz")
+      (core/backup-to-file-online conn "./backup-db-online.tgz")))
   (log/info "end run."))

@@ -26,7 +26,8 @@
         sql-file.sql-util)
   (:require [clojure.tools.logging :as log]
             [clojure.java.jdbc :as jdbc]
-            [sql-file.script :as script]))
+            [sql-file.script :as script]
+            [hikari-cp.core :as hikari-cp]))
 
 (defn- schema-path [ conn ]
   (conj (get conn :schema-path []) ""))
@@ -132,16 +133,31 @@ schema in the target database instance."
   (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' NOT BLOCKING")))
 
 (defn open-local [ desc ]
-  (log/info "Opening sql-file:" desc)  
-  (-> (hsqldb-conn desc)
-      (ensure-schema [ "sql-file" 0 ])))
+  (log/info "Opening sql-file:" desc)
+  (let [conn (-> (hsqldb-conn desc)
+                 (ensure-schema [ "sql-file" 0 ]))]
+    (doseq [ schema (get desc :schemas []) ]
+      (ensure-schema conn schema))
+    conn))
 
 (defn open-pool [ desc ]
   (log/info "Opening sql-file (pooled):" desc)  
-  (let [conn (open-local desc)]
-    (assoc conn :datasource
-           (doto (com.zaxxer.hikari.HikariDataSource.)
-             (.setDriverClassName (:classname conn))
-             (.setJdbcUrl (str "jdbc:hsqldb:" (:subname conn)))
-             (.setMaximumPoolSize (get desc :pool-size 4))))))
+  (let [conn (open-local desc)
+        datasource (hikari-cp/make-datasource (merge {:driver-class-name (:classname conn)
+                                                      :jdbc-url (str "jdbc:hsqldb:" (:subname conn))
+                                                      :maximum-pool-size (get desc :pool-size 4)}
+                                                     (get desc :pool {})))]
+    (assoc conn :datasource datasource)))
 
+(defn close-pool [ pool ]
+  (hikari-cp/close-datasource (:datasource pool)))
+
+(defn call-with-pool [ f desc ]
+  (let [pool (open-pool desc)]
+    (try
+      (f pool)
+      (finally
+        (close-pool pool)))))
+
+(defmacro with-pool [ [ var desc ] & body ]
+  `(call-with-pool (fn [ ~var ] ~@body) ~desc))

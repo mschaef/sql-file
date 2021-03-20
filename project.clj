@@ -39,13 +39,13 @@
 
   :jvm-opts ["-Djava.util.logging.config.file=logging.properties" ]
 
-  :dependencies [[org.clojure/clojure "1.10.0"]
-                 [org.hsqldb/hsqldb "2.4.1"]
-                 [org.clojure/java.jdbc "0.7.8"]
-                 [org.slf4j/log4j-over-slf4j "1.7.26"]
-                 [org.clojure/tools.logging "0.4.1"]
-                 [org.clojure/tools.reader "1.3.2"]
-                 [com.zaxxer/HikariCP "3.3.1"]]
+  :dependencies [[org.clojure/clojure "1.10.3"]
+                 [org.hsqldb/hsqldb "2.5.1"]
+                 [org.clojure/java.jdbc "0.7.12"]
+                 [org.slf4j/log4j-over-slf4j "1.7.30"]
+                 [org.clojure/tools.logging "1.1.0"]
+                 [org.clojure/tools.reader "1.3.5"]
+                 [hikari-cp "2.13.0"]]
 
   :deploy-repositories [["releases" {:url "https://clojars.org/repo"
                                    :creds :gpg}]]
