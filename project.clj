@@ -48,7 +48,7 @@
                  [hikari-cp "2.13.0"]]
 
   :deploy-repositories [["releases" {:url "https://clojars.org/repo"
-                                   :creds :gpg}]]
+                                     :sign-releases false}]]
   
   :release-tasks [["vcs" "assert-committed"]
                   ["change" "version" "leiningen.release/bump-version" "release"]
