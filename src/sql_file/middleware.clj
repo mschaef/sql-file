@@ -21,36 +21,26 @@
 ;;
 ;; You must not remove this notice, or any other, from this software.
 
-(ns sql-file.sql-util
+(ns sql-file.middleware
   (:require [clojure.tools.logging :as log]
             [clojure.java.jdbc :as jdbc]))
 
-(defn query-all [ db-connection query-spec ]
-  (log/debug "query-all:" query-spec)
-  (jdbc/query db-connection query-spec))
+(def ^:dynamic *db* nil)
 
-(defn query-first [ db-connection query-spec ]
-  (log/debug "query-first:" query-spec)
-  (first (jdbc/query db-connection query-spec)))
+(defn call-with-db-connection [ fn db-connection ]
+  (jdbc/with-db-connection [ conn db-connection ]
+    (binding [ *db* conn ]
+      (fn))))
 
-(defn scalar-result
-  ([ query-result default ]
-   (or
-    (let [first-row (first query-result)
-          row-keys (keys first-row)]
-      (when (> (count row-keys) 1)
-        (log/debug "Queries used for query-scalar should only return one field per row."))
-      (get first-row (first row-keys)))
-    default))
+(defmacro with-db-connection [ db-connection & body ]
+  `(call-with-db-connection (fn [] ~@body) ~db-connection))
 
-  ([ query-result ]
-   (scalar-result query-result nil)))
+(defn current-db-connection []
+  (when (not *db*)
+    (throw (RuntimeException. "No current database connection for query.")))
+  *db*)
 
-(defn query-scalar
-  ([ db-connection query-spec default ]
-   (log/debug "query-scalar:" query-spec)
-   (scalar-result (jdbc/query db-connection query-spec) default))
-
-  ([ db-connection query-spec ]
-   (query-scalar db-connection query-spec nil)))
+(defn wrap-db-connection [ app db-connection ]
+  (fn [ req ]
+    (call-with-db-connection (fn [] (app req)) db-connection)))
 
