@@ -21,7 +21,7 @@
 ;;
 ;; You must not remove this notice, or any other, from this software.
 
-(defproject com.mschaef/sql-file "0.4.2-SNAPSHOT"
+(defproject com.mschaef/sql-file "0.4.5"
 
   :description "One stop shopping for embedding an HSQLDB database and managing schemas for same."
 
@@ -47,9 +47,10 @@
                  [org.clojure/tools.reader "1.3.6"]
                  [hikari-cp "2.13.0"]]
 
+
   :deploy-repositories [["releases" {:url "https://clojars.org/repo"
                                      :sign-releases false}]]
-  
+
   :release-tasks [["vcs" "assert-committed"]
                   ["change" "version" "leiningen.release/bump-version" "release"]
                   ["vcs" "commit"]
