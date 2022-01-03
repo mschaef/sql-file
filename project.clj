@@ -21,12 +21,12 @@
 ;;
 ;; You must not remove this notice, or any other, from this software.
 
-(defproject com.mschaef/sql-file "0.4.1"
+(defproject com.mschaef/sql-file "0.4.2"
 
   :description "One stop shopping for embedding an HSQLDB database and managing schemas for same."
 
   :url "https://github.com/mschaef/sql-file"
-  
+
   :license {:name "The Apache Software License, Version 2.0"
             :url "http://www.apache.org/licenses/LICENSE-2.0"}
 
@@ -40,11 +40,11 @@
   :jvm-opts ["-Djava.util.logging.config.file=logging.properties" ]
 
   :dependencies [[org.clojure/clojure "1.10.3"]
-                 [org.hsqldb/hsqldb "2.5.1"]
+                 [org.hsqldb/hsqldb "2.6.1"]
                  [org.clojure/java.jdbc "0.7.12"]
-                 [org.slf4j/log4j-over-slf4j "1.7.30"]
-                 [org.clojure/tools.logging "1.1.0"]
-                 [org.clojure/tools.reader "1.3.5"]
+                 [org.slf4j/log4j-over-slf4j "1.7.32"]
+                 [org.clojure/tools.logging "1.2.3"]
+                 [org.clojure/tools.reader "1.3.6"]
                  [hikari-cp "2.13.0"]]
 
   :deploy-repositories [["releases" {:url "https://clojars.org/repo"
