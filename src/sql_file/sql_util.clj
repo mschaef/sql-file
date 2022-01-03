@@ -33,11 +33,24 @@
   (log/debug "query-first:" query-spec)
   (first (jdbc/query db-connection query-spec)))
 
-(defn query-scalar [ db-connection query-spec ]
-  (log/debug "query-scalar:" query-spec)
-  (let [first-row (first (jdbc/query db-connection query-spec))
-        row-keys (keys first-row)]
-    (when (> (count row-keys) 1)
-      (log/warn "Queries used for query-scalar should only return one field per row:" query-spec))
-    (get first-row (first row-keys))))
+(defn scalar-result
+  ([ query-result default ]
+   (or
+    (let [first-row (first query-result)
+          row-keys (keys first-row)]
+      (when (> (count row-keys) 1)
+        (log/debug "Queries used for query-scalar should only return one field per row."))
+      (get first-row (first row-keys)))
+    default))
+
+  ([ query-result ]
+   (scalar-result query-result nil)))
+
+(defn query-scalar
+  ([ db-connection query-spec default ]
+   (log/debug "query-scalar:" query-spec)
+   (scalar-result (jdbc/query db-connection query-spec) default))
+
+  ([ db-connection query-spec ]
+   (query-scalar db-connection query-spec nil)))
 
