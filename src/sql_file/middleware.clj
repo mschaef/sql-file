@@ -40,7 +40,17 @@
     (throw (RuntimeException. "No current database connection for query.")))
   *db*)
 
+(defn db []
+  (current-db-connection))
+
 (defn wrap-db-connection [ app db-connection ]
   (fn [ req ]
     (call-with-db-connection (fn [] (app req)) db-connection)))
 
+(defn call-with-db-transaction [ fn ]
+  (jdbc/with-db-transaction [ txn (current-db-connection) ]
+    (binding [ *db* txn ]
+      (fn))))
+
+(defmacro with-db-transaction [ & body ]
+  `(call-with-db-transaction (fn [] ~@body)))
