@@ -21,7 +21,7 @@
 ;;
 ;; You must not remove this notice, or any other, from this software.
 
-(defproject com.mschaef/sql-file "0.5.0-SNAPSHOT"
+(defproject com.mschaef/sql-file "0.4.8-SNAPSHOT"
 
   :description "One stop shopping for embedding an HSQLDB database and managing schemas for same."
 
