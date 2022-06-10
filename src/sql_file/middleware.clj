@@ -27,6 +27,12 @@
 
 (def ^:dynamic *db* nil)
 
+;;; TODO: Current logic opens a database connection on every request,
+;;; regardless of whether or not it's used within the middleware wrapped
+;;; function. This should be changed to defer opening of the connection
+;;; until use via that { :factory .... } connection form. (Which will also
+;;; make it easier to integrate sql-file with yesql, given that yesql
+;;; only accepts a static connection map passed into defqueries.)
 (defn call-with-db-connection [ fn db-connection ]
   (jdbc/with-db-connection [ conn db-connection ]
     (binding [ *db* conn ]
