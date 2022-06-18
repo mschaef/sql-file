@@ -32,17 +32,14 @@
 (defn- schema-path [ conn ]
   (conj (get conn :schema-path []) ""))
 
-(defn- locate-schema-script [ conn basename ]
-  (or (some identity
-            (map #(clojure.java.io/resource (format "%s%s" % basename))
-                 (schema-path conn)))
-      (fail "Cannot find resource script: " basename " in search path " (schema-path conn))))
-
-(defn- schema-install-script [ conn schema ]
+(defn- locate-schema-script [ conn schema-name schema-version ]
   "Locate the schema script to install the given schema name and
 version. If there is no such script, throws an exception."
-  (let [[ schema-name schema-version ] schema]
-    (locate-schema-script conn (format "schema-%s-%s.sql" schema-name schema-version))))
+  (let [basename (format "schema-%s-%s.sql" schema-name schema-version)]
+    (or (some identity
+              (map #(clojure.java.io/resource (format "%s%s" % basename))
+                   (schema-path conn)))
+        (fail "Cannot find schema script: " basename " in search path " (schema-path conn)))))
 
 (defn do-statements [ conn stmts ]
   "Execute a sequence of statements against the given DB connection."
@@ -57,9 +54,10 @@ version. If there is no such script, throws an exception."
 (defn- run-script [ conn script-url ]
   "Run the database script at the given URL against a specific
 database connection."
-  (log/debug "Run script:" script-url)
+  (log/info "Run DB script:" (str script-url))
   (let [ script-text (slurp script-url) ]
-    (do-statements conn (map #(assoc % :url script-url) (script/sql-statements script-text)))))
+    (do-statements conn (map #(assoc % :url script-url)
+                             (script/sql-statements script-text)))))
 
 (defn get-schema-version [ conn schema-name ]
   "Retrieves the current version of a schema within a database managed
@@ -94,7 +92,7 @@ schema in the target database instance."
   (log/info "Installing schema:" schema)
   (let [ [schema-name schema-version ] schema ]
     (try
-      (run-script conn (schema-install-script conn schema))
+      (run-script conn (locate-schema-script conn schema-name schema-version))
       (catch Exception ex
         (throw (Exception. (str "Error installing schema: " schema) ex))))
     (set-schema-version! conn schema-name schema-version)))
