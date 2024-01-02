@@ -66,3 +66,30 @@
            (script/sql-statements "1\n\n2;"))))
     (is (= [{:line 1, :column 1, :statement "1 2"} {:line 2, :column 3, :statement "3 4"}]
            (script/sql-statements "1\n2;3\n4;"))))
+
+(defn- test-script-statements [ script-name ]
+  (script/sql-statements
+   (slurp (clojure.java.io/resource script-name))))
+
+(deftest script-parser
+  (testing "empty script"
+    (is (= 0 (count (test-script-statements "empty-script.sql")))))
+
+  (testing "single statement script"
+    (is (= [{:line 1, :column 1, :statement "CREATE CACHED TABLE sql_file_schema ( schema_name VARCHAR(32) NOT NULL PRIMARY KEY, schema_version INT NOT NULL )"}]
+           (test-script-statements "single-statement.sql"))))
+
+  (testing "multiple statement script"
+    (is (= [{:line 1, :column 1, :statement "CREATE CACHED TABLE sql_file_schema ( schema_name VARCHAR(32) NOT NULL PRIMARY KEY, )"}
+            {:line 5, :column 1, :statement "CREATE CACHED TABLE sql_file_schema ( schema_version INT NOT NULL )"}]
+           (test-script-statements "multi-statement.sql"))))
+
+  (testing "multiple statement script w/whitespace"
+    (is (= [{:line 3, :column 1, :statement "CREATE CACHED TABLE sql_file_schema ( schema_name VARCHAR(32) NOT NULL PRIMARY KEY, )"}
+            {:line 7, :column 1, :statement "CREATE CACHED TABLE sql_file_schema ( schema_version INT NOT NULL )"}]
+           (test-script-statements "multi-statement-whitespace.sql"))))
+
+  (testing "multiple statement script w/comments"
+    (is (= [{:line 2, :column 1, :statement "CREATE CACHED TABLE sql_file_schema ( schema_name VARCHAR(32) NOT NULL PRIMARY KEY, )"}
+            {:line 6, :column 1, :statement "CREATE CACHED TABLE sql_file_schema ( schema_version INT NOT NULL )"}]
+           (test-script-statements "multi-statement-comment.sql")))))

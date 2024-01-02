@@ -35,7 +35,8 @@
 
   :profiles {:dev
              {:main sql-file.main
-              :aot [sql-file.main]}}
+              :aot [sql-file.main]
+              :resource-paths ["test/resources"]}}
 
   :jvm-opts ["-Djava.util.logging.config.file=logging.properties" ]
 
