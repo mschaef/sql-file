@@ -6,7 +6,7 @@
 
 (def test-db-name "mem:mem-db")
 
-(def test-db (core/hsqldb-conn test-db-name))
+(def test-db (core/hsqldb-conn {:name test-db-name}))
 
 (defn- with-clean-db [ t ]
   (jdbc/with-db-connection [ conn test-db ]
