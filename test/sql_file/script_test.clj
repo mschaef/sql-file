@@ -67,9 +67,25 @@
     (is (= [{:line 1, :column 1, :statement "1 2"} {:line 2, :column 3, :statement "3 4"}]
            (script/sql-statements "1\n2;3\n4;"))))
 
+(defn- script-first-non-whitespace [ script-name ]
+  (let [text (script/normalize (slurp (clojure.java.io/resource script-name)))
+        in (rdr/source-logging-push-back-reader text)]
+    (script/sql-skip-whitespace in)
+    (rdr/read-char in)))
+
+(deftest sql-skip-whitespace
+  (testing "no whitespace to skip"
+    (is (= \1 (script-first-non-whitespace "no-whitespace.txt"))))
+
+  (testing "skip leading whitespace"
+    (is (= \1 (script-first-non-whitespace "leading-whitespace.txt")))
+    (is (= \1 (script-first-non-whitespace "leading-newlines.txt")))))
+
 (defn- test-script-statements [ script-name ]
+
   (script/sql-statements
-   (slurp (clojure.java.io/resource script-name))))
+   (script/normalize
+    (slurp (clojure.java.io/resource script-name)))))
 
 (deftest script-parser
   (testing "empty script"

@@ -25,13 +25,15 @@
   "Utility functions for processing SQL scripts."
   (:require [clojure.tools.reader.reader-types :as rdr]))
 
+(defn- is-whitespace? [ maybe-ch ]
+  (and maybe-ch
+       (Character/isWhitespace maybe-ch)))
+
 (defn sql-skip-whitespace [ in ]
   "Skip to the next non-whitespace character in the given input
-  stream and return that character"
-  (while (let [ch (rdr/peek-char in)]
-           (and ch (Character/isWhitespace ch)))
-    (rdr/read-char in))
-  (rdr/peek-char in))
+  stream."
+  (while (is-whitespace? (rdr/peek-char in))
+    (rdr/read-char in)))
 
 (defn sql-skip-comment [ in ]
   "Skip a SQL comment, returning a the sequence of characters
@@ -66,7 +68,7 @@ that the returned literal is well-formed."
   "Ensure there's at least a single character of whitespace at the end
   of the given buffer."
   (if (and (> (.length buf) 0)
-           (not (Character/isWhitespace (.charAt buf (- (.length buf) 1)))))
+           (not (is-whitespace? (.charAt buf (- (.length buf) 1)))))
     (.append buf \space)
     buf))
 
@@ -77,7 +79,7 @@ that the returned literal is well-formed."
   (sql-skip-whitespace in)
   (loop [stmt-buf (StringBuffer.)
          loc nil]
-    (case (rdr/peek-char in) 
+    (case (rdr/peek-char in)
       \-
       (do
         (let [ comment-loc (get-input-location in) ]
@@ -87,33 +89,33 @@ that the returned literal is well-formed."
               (sql-skip-comment in)
               (recur stmt-buf loc))
             (recur (.append stmt-buf \-) (or loc comment-loc)))))
-      
+
       (nil \;)
       (do
         (rdr/read-char in)
         (if (> (.length stmt-buf) 0)
           (assoc loc :statement (.toString stmt-buf))
           nil))
-      
+
       \'
       (let [ str-loc (get-input-location in) ]
         (recur (.append stmt-buf (sql-read-string in)) (or loc str-loc)))
 
+      ;; Default
       (let [ch-loc (get-input-location in)
             ch (rdr/read-char in) ]
-        (if (Character/isWhitespace ch)
+        (if (is-whitespace? ch)
           (recur (ensure-whitespace stmt-buf) loc)
           (recur (.append stmt-buf ch) (or loc ch-loc)))))))
+
+(defn normalize [ script-text ]
+  (clojure.string/replace script-text \return \space))
 
 (defn sql-statements [ sql ]
   "Given a sequence of characters corresponding to a SQL script,
 return a sequence of the SQL statements contained in that script."
-  (let [in (rdr/source-logging-push-back-reader sql)]
+  (let [in (rdr/source-logging-push-back-reader (normalize sql))]
     (loop [stmts []]
-      (sql-skip-whitespace in)
-      (if (nil? (rdr/peek-char in))
-        stmts
-        (recur (if-let [ stmt (sql-read-statement in)]
-                 (conj stmts stmt)
-                 stmts))))))
-
+      (if-let [ stmt (sql-read-statement in) ]
+        (recur (conj stmts stmt))
+        stmts))))
