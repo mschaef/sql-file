@@ -39,7 +39,7 @@ version. If there is no such script, throws an exception."
     (or (some identity
               (map #(clojure.java.io/resource (format "%s%s" % basename))
                    (schema-path conn)))
-        (fail "Cannot find schema script: " basename " in search path " (schema-path conn)))))
+        (throw (Exception. (str "Cannot find schema script: " basename " in search path " (schema-path conn)))))))
 
 (defn do-statements [ conn stmts ]
   "Execute a sequence of statements against the given DB connection."
@@ -78,7 +78,7 @@ is logged with the stack trace and the function returns nil."
   "Sets the version of a schema within a database managed by
 sql-file."
   (if-let [ cur-schema-version (get-schema-version conn schema-name) ]
-    (unless (= cur-schema-version req-schema-version)
+    (when (not= cur-schema-version req-schema-version)
       (jdbc/update! conn :sql_file_schema
                     {:schema_version req-schema-version}
                     ["schema_name=?" schema-name]))
@@ -120,7 +120,7 @@ schema in the target database instance."
           (do
             (if (< cur-schema-version req-schema-version)
               (install-schema conn [req-schema-name (+ cur-schema-version 1)])
-              (fail "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))
+              (throw (Exception. (str "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))))
             (recur)))))
     conn))
 
