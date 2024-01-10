@@ -67,7 +67,6 @@
            Exception #"Query must have only one column"
            (query-scalar conn "SELECT x, y FROM test_point WHERE x=1;"))))))
 
-
 (deftest test-query-scalar-required
   (jdbc/with-db-connection [ conn (open-test-db [ "test" 0 ])]
     (testing "query-scalar-required returns scalar value"
@@ -86,5 +85,3 @@
       (is (thrown-with-msg?
            Exception #"Query must have only one column"
            (query-scalar-required conn "SELECT x, y FROM test_point WHERE x=1;"))))))
-
-
