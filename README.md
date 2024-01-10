@@ -8,10 +8,11 @@ well as automatically applying schema scripts.
 
 The use case for this is scenarios where the capabilities provided by
 a standalone database engine aren't worth the administrative
-hassle. With an uberjar build, `sql-file` makes ie easier to
-consolidate a complete application into a single deployable
-artifact. (And because `sql-file` just presumes the use of SQL, you
-can easily switch away to something larger if you ever find the need.)
+hassle. With an uberjar build, `sql-file` makes it easier to
+consolidate a complete application, database engine and all, into a
+single deployable artifact. (And with the presumption of SQL,
+`sql-file` makes it possible to switch away to something larger
+without rewriting application logic.)
 
 ## Adding to Your Project
 
@@ -22,11 +23,11 @@ It can be added to a [Leiningen](https://leiningen.org/) project with the
 following dependency:
 
 ```clojure
-[com.mschaef/sql-file "0.4.1"]
+[com.mschaef/sql-file "0.4.10"]
 ```
 
 ## Usage
-                                                      
+
 Example usage:
 
 ```clojure
@@ -81,8 +82,8 @@ executed.
 
 ## Limitations
 
-The database provided by `sql-file` is strictly embedded in a host
-application, and does not support inbound connections over a
+The database engine provided by `sql-file` is strictly embedded in a
+host application, and does not support inbound connections over a
 network. Compared to a traditional database design, where the database
 sits in a separate process, this can make it more inconvenient to
 inspect the state of the database.
@@ -90,13 +91,13 @@ inspect the state of the database.
 `sql-file` needs to break input script files into individual
 statements to be able to execute them individually. To do this, it
 needs a rudimentary SQL parser. The current version of this parser
-only supports `--` style comments. 
+only supports `--` style comments.
 
 I would happily accept PRs to fix these or other issues.
 
 ## License
 
-Copyright © 2015-2021 [Michael Schaeffer](http://www.mschaef.com/)
+Copyright © 2015-2024 [Michael Schaeffer](http://www.mschaef.com/)
 
 Portions Copyright © 2014 [KSM Technology Partners](https://www.ksmpartners.com/)
 

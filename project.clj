@@ -1,4 +1,4 @@
-;; Copyright (c) 2015-2019 Michael Schaeffer
+;; Copyright (c) 2015-2024 Michael Schaeffer
 ;;
 ;; Licensed as below.
 ;;
