@@ -26,3 +26,8 @@ CREATE CACHED TABLE test_point (
   y INT NOT NULL
 );
 
+INSERT INTO test_point(x, y) values(1, 10);
+INSERT INTO test_point(x, y) values(2, 20);
+INSERT INTO test_point(x, y) values(3, 30);
+INSERT INTO test_point(x, y) values(4, 40);
+
