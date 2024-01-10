@@ -1,15 +1,39 @@
 * Pending
-** There is a way to set a directory prefix for the schema file scan.
-** There is support for some kind of connection pooling, in order to avoid open/closee
+** Switch to explicit schema naming rather than schema-<schema_name>-<version>.sql
+  Current design relies on well known schema names, which impose a
+  specific versioning scheme. Rather, the schema filename can be fully
+  identified at the point it's requested, and back references to older
+  schemas be explicit in the file.
+
+  So "sql-file-v1" would refer to a schema in the "sql-file-v1.sql"
+  file. The existing directory search path mechanism would be used to
+  identify the location of the file.  "sql-file-v1.sql" could the back
+  reference the previous schema with something like this:
+  "-- schema: sql-file-v0". Back references would be checked against
+  the installed schema table to avoid duplicate installation.
+
+  An elaboration of this would be to allow schemas to be specified as
+  paths. So "sql-file/v1" referring to "sql-file/v1.sql".
+** Store digest of schema files and uses that to detect uninstalled script changes.
+** Store digest of individual schema script statements
+  This would allow schema scripts to be partially applied (in the
+  event of a failure) and re-run to complete. Careful use of this
+  feature would make it possible to incrementally develop schema
+  migration scripts without restoring the database every cycle.
 ** There is the ability to request installation and migrations of schemas from within schema scripts.
    Special case handling within a schema script. Something like this
 
    @(ensure [ "schema-name" 0 ])
+
+   Or as above: --schema: schema-name-v0
 ** Logging of the times associated with schema operations
    Separate table with schema name, version, and begin/end time of the
    operation that caused that schema version to be present. SHA1 hash
    of schema script?
 * Completed
+** There is a way to set a directory prefix for the schema file scan.
+** There is support for some kind of connection pooling, in order to avoid open/closee
+
 ** The scheme operation error message includes the line number of the failing statement.
 ** SQL Utilities are exported from sql-file.util
 ** An error message is logged at error level if a schema operation fails.
