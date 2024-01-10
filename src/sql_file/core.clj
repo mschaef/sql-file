@@ -22,8 +22,7 @@
 ;; You must not remove this notice, or any other, from this software.
 
 (ns sql-file.core
-  (:use sql-file.util
-        sql-file.sql-util)
+  (:use sql-file.sql-util)
   (:require [clojure.tools.logging :as log]
             [clojure.java.jdbc :as jdbc]
             [sql-file.script :as script]

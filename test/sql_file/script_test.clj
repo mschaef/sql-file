@@ -22,8 +22,7 @@
 ;; You must not remove this notice, or any other, from this software.
 
 (ns sql-file.script-test
-  (:use clojure.test
-        sql-file.util)
+  (:use clojure.test)
   (:require [sql-file.script :as script]
             [clojure.tools.reader.reader-types :as rdr]))
 
