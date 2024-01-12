@@ -28,11 +28,18 @@
 
 (def memory-db? false)
 
-(defn -main []
+(defn -main [ & args ]
   (core/with-pool [ pool {:name (if memory-db? "mem:test-db" "test-db")
                           :schemas [["test" 1]]}]
     (jdbc/with-db-connection [ conn pool ]
-      (log/info "Conn: " conn)
-      (core/backup-to-file-blocking conn "./backup-db-blocking.tgz")
-      (core/backup-to-file-online conn "./backup-db-online.tgz")))
+      (case (first args)
+        "backup"
+        (do
+          (core/backup-to-file-blocking conn "./backup-db-blocking.tgz")
+          (core/backup-to-file-online conn "./backup-db-online.tgz"))
+
+        "shell"
+        (core/start-sqltool-shell conn)
+
+        (println "Command must be one of backup or pronpt."))))
   (log/info "end run."))

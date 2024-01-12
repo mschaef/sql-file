@@ -129,6 +129,14 @@ schema in the target database instance."
 (defn backup-to-file-online [ conn output-path ]
   (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' NOT BLOCKING")))
 
+(defn start-sqltool-shell [ conn ]
+  (.flush *out*)
+  (doto (org.hsqldb.cmdline.SqlFile. *in* "stdin" System/out
+                                     "UTF-8" true
+                                     (java.net.URL. "file:."))
+    (.setConnection (:connection conn))
+    (.execute)))
+
 (defn open-local [ desc ]
   (log/info "Opening sql-file:" desc)
   (let [conn (-> (hsqldb-conn desc)
@@ -138,7 +146,7 @@ schema in the target database instance."
     conn))
 
 (defn open-pool [ desc ]
-  (log/info "Opening sql-file (pooled):" desc)  
+  (log/info "Opening sql-file (pooled):" desc)
   (let [conn (open-local desc)
         datasource (hikari-cp/make-datasource (merge {:driver-class-name (:classname conn)
                                                       :jdbc-url (str "jdbc:hsqldb:" (:subname conn))
