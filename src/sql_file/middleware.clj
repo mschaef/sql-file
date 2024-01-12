@@ -33,13 +33,13 @@
 ;;; until use via that { :factory .... } connection form. (Which will also
 ;;; make it easier to integrate sql-file with yesql, given that yesql
 ;;; only accepts a static connection map passed into defqueries.)
-(defn call-with-db-connection [ fn db-connection ]
+(defn call-with-db-connection [ db-connection fn ]
   (jdbc/with-db-connection [ conn db-connection ]
     (binding [ *db* conn ]
       (fn))))
 
 (defmacro with-db-connection [ db-connection & body ]
-  `(call-with-db-connection (fn [] ~@body) ~db-connection))
+  `(call-with-db-connection ~db-connection (fn [] ~@body)))
 
 (defn current-db-connection []
   (when (not *db*)
@@ -51,7 +51,7 @@
 
 (defn wrap-db-connection [ app db-connection ]
   (fn [ req ]
-    (call-with-db-connection (fn [] (app req)) db-connection)))
+    (call-with-db-connection db-connection (fn [] (app req)))))
 
 (defn call-with-db-transaction [ fn ]
   (jdbc/with-db-transaction [ txn (current-db-connection) ]
