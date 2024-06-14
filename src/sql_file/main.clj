@@ -28,11 +28,22 @@
 
 (def memory-db? false)
 
-(defn -main []
+(defn -main [ & args ]
   (core/with-pool [ pool {:name (if memory-db? "mem:test-db" "test-db")
                           :schemas [["test" 1]]}]
-    (jdbc/with-db-connection [ conn pool ]
-      (log/info "Conn: " conn)
-      (core/backup-to-file-blocking conn "./backup-db-blocking.tgz")
-      (core/backup-to-file-online conn "./backup-db-online.tgz")))
-  (log/info "end run."))
+    (case (first args)
+      "backup"
+      (jdbc/with-db-connection [ conn pool ]
+        (println "Conn: " conn)
+        (core/backup-to-file-blocking conn "./backup-db-blocking.tgz")
+        (core/backup-to-file-online conn "./backup-db-online.tgz"))
+
+      "prompt"
+      (jdbc/with-db-connection [ conn pool ]
+        (println conn)
+        (doto (org.hsqldb.cmdline.SqlFile. *in* "stdin" System/out "UTF-8" true (java.net.URL. "https://www.google.com"))
+          (.setConnection (:connection conn))
+          (.execute)))
+
+      (println "Argument must be one of: backup, prompt.")))
+  (println "end run."))
