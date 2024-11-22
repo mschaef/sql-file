@@ -40,25 +40,13 @@
 
   :jvm-opts ["-Djava.util.logging.config.file=logging.properties" ]
 
-  :dependencies [[org.clojure/clojure "1.11.1"]
-                 [org.hsqldb/hsqldb "2.7.2"]
-                 [org.hsqldb/sqltool "2.7.2"]
+  :dependencies [[org.clojure/clojure "1.12.0"]
+                 [org.hsqldb/hsqldb "2.7.4"]
+                 [org.hsqldb/sqltool "2.7.4"]
                  [org.clojure/java.jdbc "0.7.12"]
-                 [org.slf4j/log4j-over-slf4j "2.0.10"]
-                 [org.clojure/tools.logging "1.2.4"]
-                 [org.clojure/tools.reader "1.3.7"]
-                 [hikari-cp "3.0.1"]]
+                 [org.slf4j/log4j-over-slf4j "2.0.16"]
+                 [org.clojure/tools.logging "1.3.0"]
+                 [org.clojure/tools.reader "1.5.0"]
+                 [hikari-cp "3.1.0"]]
 
-
-  :deploy-repositories [["releases" {:url "https://repo.clojars.org"
-                                     :sign-releases false}]]
-
-  :release-tasks [["vcs" "assert-committed"]
-                  ["test"]
-                  ["change" "version" "leiningen.release/bump-version" "release"]
-                  ["vcs" "commit"]
-                  ["vcs" "tag" "--no-sign"]
-                  ["deploy"]
-                  ["change" "version" "leiningen.release/bump-version"]
-                  ["vcs" "commit"]
-                  ["vcs" "push"]])
+  :deploy-repositories [["releases" {:url "https://repo.clojars.org"}]])
