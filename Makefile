@@ -21,10 +21,14 @@ format:                                        ## Reformat Clojure source code
 	lein cljfmt fix
 
 .PHONY: package
-package: check-format                          ## Package a new release of the application
+package: check-format tested                   ## Package a new release of the application
 	lein clean
 	lein compile
 	lein release patch
+
+.PHONY: tested
+tested:                                        ## Run the unit test suite
+	lein test
 
 .PHONY: clean
 clean:                                         ## Clean the local build directory
