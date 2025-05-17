@@ -28,7 +28,7 @@
 (defn query-all
   "Query, returning a sequence of all rows in a given result set."
 
-  ([ db-connection query-spec ]
+  ([db-connection query-spec]
    (log/debug "query-all:" query-spec)
    (jdbc/query db-connection query-spec)))
 
@@ -37,7 +37,7 @@
   a row with only a single column.) Rows with more than one column result
   in an exception being thrown."
 
-  ([ row ]
+  ([row]
    (let [row-keys (keys row)]
      (when (not= (count row-keys) 1)
        (throw
@@ -49,7 +49,7 @@
   "Return a sequence consisting of the values from a result set composed
   of scalar (single column) rows."
 
-  ([ query-result ]
+  ([query-result]
    (if-let [first-row (first query-result)]
      (map (scalar-row-key first-row) query-result)
      [])))
@@ -58,14 +58,14 @@
   "Issue a query for a result set containing a single column and return
   a sequence of those values."
 
-  ([ db-connection query-spec ]
+  ([db-connection query-spec]
    (columnar-result (query-all db-connection query-spec))))
 
 (defn query-first
   "Issue a query and return the first row of the result set, or nil if
   the result set is empty."
 
-  ([ db-connection query-spec ]
+  ([db-connection query-spec]
    (log/debug "query-first:" query-spec)
    (first (jdbc/query db-connection query-spec))))
 
@@ -74,23 +74,23 @@
   value if the result set is empty. This can return nil in the event
   the result set contains a row, but the column value is null."
 
-  ([ query-result default ]
+  ([query-result default]
    (if-let [first-row (first query-result)]
      (get first-row (scalar-row-key first-row))
      default))
 
-  ([ query-result ]
+  ([query-result]
    (scalar-result query-result nil)))
 
 (defn query-scalar
   "Issue a database query and return the scalar result, if there is
   one. Return the specified default otherwise."
 
-  ([ db-connection query-spec default ]
+  ([db-connection query-spec default]
    (log/debug "query-scalar:" query-spec)
    (scalar-result (jdbc/query db-connection query-spec) default))
 
-  ([ db-connection query-spec ]
+  ([db-connection query-spec]
    (query-scalar db-connection query-spec nil)))
 
 (defn query-scalar-required
@@ -98,10 +98,10 @@
   one. Throws an exception in the event the query does not return a
   result."
 
-  ([ db-connection query-spec ]
+  ([db-connection query-spec]
    ;; Queries cannot return keywords, so :missing-row will only be
    ;; returned if the row is missing.
-   (let [ scalar (query-scalar db-connection query-spec :missing-row) ]
+   (let [scalar (query-scalar db-connection query-spec :missing-row)]
      (if (not= scalar :missing-row)
        scalar
        (throw (Exception. (str "No value returned when required by query: " query-spec)))))))

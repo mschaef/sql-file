@@ -28,10 +28,10 @@
             [sql-file.script :as script]
             [hikari-cp.core :as hikari-cp]))
 
-(defn- schema-path [ conn ]
+(defn- schema-path [conn]
   (conj (get conn :schema-path []) ""))
 
-(defn- locate-schema-script [ conn schema-name schema-version ]
+(defn- locate-schema-script [conn schema-name schema-version]
   "Locate the schema script to install the given schema name and
 version. If there is no such script, throws an exception."
   (let [basename (format "schema-%s-%s.sql" schema-name schema-version)]
@@ -40,25 +40,25 @@ version. If there is no such script, throws an exception."
                    (schema-path conn)))
         (throw (Exception. (str "Cannot find schema script: " basename " in search path " (schema-path conn)))))))
 
-(defn do-statements [ conn stmts ]
+(defn do-statements [conn stmts]
   "Execute a sequence of statements against the given DB connection."
-  (jdbc/with-db-connection [ cdb conn ]
-    (doseq [ stmt stmts ]
+  (jdbc/with-db-connection [cdb conn]
+    (doseq [stmt stmts]
       (log/debug "Executing SQL:" (str (:url stmt) "(" (:line stmt) ":" (:column stmt) ")") (:statement stmt))
       (try
         (jdbc/db-do-prepared cdb (:statement stmt))
         (catch Exception ex
           (throw (Exception. (str "Error running statement: " stmt) ex)))))))
 
-(defn- run-script [ conn script-url ]
+(defn- run-script [conn script-url]
   "Run the database script at the given URL against a specific
 database connection."
   (log/info "Run DB script:" (str script-url))
-  (let [ script-text (slurp script-url) ]
+  (let [script-text (slurp script-url)]
     (do-statements conn (map #(assoc % :url script-url)
                              (script/sql-statements script-text)))))
 
-(defn get-schema-version [ conn schema-name ]
+(defn get-schema-version [conn schema-name]
   "Retrieves the current version of a schema within a database managed
 by sql-file. If there is no such schema, this function returns nil. If
 the version cannot be identified due to an exception an error message
@@ -70,13 +70,13 @@ is logged with the stack trace and the function returns nil."
                         schema-name])
     (catch Exception ex
       (when (log/enabled? :debug)
-        (log/error ex "Error while attempting to identify version of schema:" schema-name)) 
+        (log/error ex "Error while attempting to identify version of schema:" schema-name))
       nil)))
 
-(defn set-schema-version! [ conn schema-name req-schema-version ]
+(defn set-schema-version! [conn schema-name req-schema-version]
   "Sets the version of a schema within a database managed by
 sql-file."
-  (if-let [ cur-schema-version (get-schema-version conn schema-name) ]
+  (if-let [cur-schema-version (get-schema-version conn schema-name)]
     (when (not= cur-schema-version req-schema-version)
       (jdbc/update! conn :sql_file_schema
                     {:schema_version req-schema-version}
@@ -85,11 +85,11 @@ sql-file."
                   {:schema_name schema-name
                    :schema_version req-schema-version})))
 
-(defn- install-schema [ conn schema ]
+(defn- install-schema [conn schema]
   "Locate and run the script necessary to install the specified
 schema in the target database instance."
   (log/info "Installing schema:" schema)
-  (let [ [schema-name schema-version ] schema ]
+  (let [[schema-name schema-version] schema]
     (try
       (run-script conn (locate-schema-script conn schema-name schema-version))
       (catch Exception ex
@@ -98,7 +98,7 @@ schema in the target database instance."
 
 ;; Public Entry points
 
-(defn hsqldb-conn [ desc ]
+(defn hsqldb-conn [desc]
   "Construct a connection map for an HSQLDB database with the given
 filename and schema. A name with a \"mem:\" prefix may be used to
 request a memory database."
@@ -107,7 +107,7 @@ request a memory database."
            :subname (:name desc)}
     (:schema-path desc) (assoc :schema-path (:schema-path desc))))
 
-(defn ensure-schema [ conn schema ]
+(defn ensure-schema [conn schema]
   "Locate and run the scripts necessary to install the specified
 schema in the target database instance."
   (log/debug "Ensuring schema:" schema)
@@ -123,16 +123,16 @@ schema in the target database instance."
             (recur)))))
     conn))
 
-(defn checkpoint-defragment [ conn ]
+(defn checkpoint-defragment [conn]
   (jdbc/db-do-prepared conn "CHECKPOINT DEFRAG"))
 
-(defn backup-to-file-blocking [ conn output-path ]
+(defn backup-to-file-blocking [conn output-path]
   (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' BLOCKING")))
 
-(defn backup-to-file-online [ conn output-path ]
+(defn backup-to-file-online [conn output-path]
   (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' NOT BLOCKING")))
 
-(defn start-sqltool-shell [ conn ]
+(defn start-sqltool-shell [conn]
   (.flush *out*)
   (doto (org.hsqldb.cmdline.SqlFile. *in* "stdin" System/out
                                      "UTF-8" true
@@ -140,15 +140,15 @@ schema in the target database instance."
     (.setConnection (:connection conn))
     (.execute)))
 
-(defn open-local [ desc ]
+(defn open-local [desc]
   (log/info "Opening sql-file:" desc)
   (let [conn (-> (hsqldb-conn desc)
-                 (ensure-schema [ "sql-file" 0 ]))]
-    (doseq [ schema (get desc :schemas []) ]
+                 (ensure-schema ["sql-file" 0]))]
+    (doseq [schema (get desc :schemas [])]
       (ensure-schema conn schema))
     conn))
 
-(defn open-pool [ desc ]
+(defn open-pool [desc]
   (log/info "Opening sql-file (pooled):" desc)
   (let [conn (open-local desc)
         datasource (hikari-cp/make-datasource (merge {:driver-class-name (:classname conn)
@@ -157,15 +157,15 @@ schema in the target database instance."
                                                      (get desc :pool {})))]
     (assoc conn :datasource datasource)))
 
-(defn close-pool [ pool ]
+(defn close-pool [pool]
   (hikari-cp/close-datasource (:datasource pool)))
 
-(defn call-with-pool [ f desc ]
+(defn call-with-pool [f desc]
   (let [pool (open-pool desc)]
     (try
       (f pool)
       (finally
         (close-pool pool)))))
 
-(defmacro with-pool [ [ var desc ] & body ]
-  `(call-with-pool (fn [ ~var ] ~@body) ~desc))
+(defmacro with-pool [[var desc] & body]
+  `(call-with-pool (fn [~var] ~@body) ~desc))

@@ -28,10 +28,10 @@
 
 (def memory-db? false)
 
-(defn -main [ & args ]
-  (core/with-pool [ pool {:name (if memory-db? "mem:test-db" "test-db")
-                          :schemas [["test" 1]]}]
-    (jdbc/with-db-connection [ conn pool ]
+(defn -main [& args]
+  (core/with-pool [pool {:name (if memory-db? "mem:test-db" "test-db")
+                         :schemas [["test" 1]]}]
+    (jdbc/with-db-connection [conn pool]
       (case (first args)
         "backup"
         (do

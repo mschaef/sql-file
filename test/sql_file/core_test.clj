@@ -32,36 +32,35 @@
 
 (def test-db (core/hsqldb-conn {:name test-db-name}))
 
-(defn- with-clean-db [ t ]
-  (jdbc/with-db-connection [ conn test-db ]
+(defn- with-clean-db [t]
+  (jdbc/with-db-connection [conn test-db]
     (jdbc/db-do-prepared conn "DROP SCHEMA PUBLIC CASCADE"))
   (t))
 
 (use-fixtures :each with-clean-db)
 
-(defn- open-test-db [ schema ]
-  (-> (core/open-local {:name test-db-name } )
+(defn- open-test-db [schema]
+  (-> (core/open-local {:name test-db-name})
       (core/ensure-schema schema)))
 
 (deftest create-memory-database
-  (jdbc/with-db-connection [ conn (open-test-db [ "test" 0 ])]
+  (jdbc/with-db-connection [conn (open-test-db ["test" 0])]
     (testing "schema versions are reachable via API and correct."
       (is (= 0 (core/get-schema-version conn "sql-file")))
       (is (= 0 (core/get-schema-version conn "test"))))))
 
 (deftest create-and-upgrade-memory-database
-  (jdbc/with-db-connection [ conn (open-test-db [ "test" 1 ])]
+  (jdbc/with-db-connection [conn (open-test-db ["test" 1])]
     (testing "schema versions are reachable via API and correct."
       (is (= 0 (core/get-schema-version conn "sql-file")))
       (is (= 1 (core/get-schema-version conn "test")))))
 
   (testing "cannot downgrade existing database"
     (is (thrown-with-msg? Exception #"Cannot downgrade schema test from version 1 to 0"
-                          (jdbc/with-db-connection [ conn (open-test-db [ "test" 0 ])]
-                            )))))
+                          (jdbc/with-db-connection [conn (open-test-db ["test" 0])])))))
 
 (deftest set-schema-version!
-  (jdbc/with-db-connection [ conn (open-test-db [ "test" 0 ]) ]
+  (jdbc/with-db-connection [conn (open-test-db ["test" 0])]
     (testing "missing schema is missing"
       (is (nil? (core/get-schema-version conn "missing-schema"))))
 
@@ -77,11 +76,10 @@
 (deftest failed-schema-execution
   (testing "Upgrade to bad script fails"
     (is (thrown-with-msg? Exception #"Error installing schema: \[\"test\" 2\]"
-                          (jdbc/with-db-connection [ conn (open-test-db [ "test" 2 ]) ]
-                            ))))
+                          (jdbc/with-db-connection [conn (open-test-db ["test" 2])]))))
 
   (testing "Schema versions correct after failure."
-    (jdbc/with-db-connection [ conn (open-test-db [ "test" 1 ]) ]
+    (jdbc/with-db-connection [conn (open-test-db ["test" 1])]
       (is (= 0 (core/get-schema-version conn "sql-file")))
       (is (=  (core/get-schema-version conn "test"))))))
 

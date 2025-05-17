@@ -26,7 +26,7 @@
   (:require [sql-file.script :as script]
             [clojure.tools.reader.reader-types :as rdr]))
 
-(defn- sql-remaining [ sql ]
+(defn- sql-remaining [sql]
   (let [in (rdr/source-logging-push-back-reader sql)
         buf (StringBuffer.)]
     (script/sql-read-string in)
@@ -34,7 +34,7 @@
       (.append buf (rdr/read-char in)))
     (.toString buf)))
 
-(defn- sql-string-literal [ sql ]
+(defn- sql-string-literal [sql]
   (script/sql-read-string (rdr/source-logging-push-back-reader sql)))
 
 (deftest sql-read-string
@@ -54,7 +54,7 @@
     (is (= "*" (sql-remaining "'quot''d'*")))
     (is (= "*" (sql-remaining "''''''*")))))
 
-(deftest sql-statements 
+(deftest sql-statements
   (testing "Empty script"
     (is (empty? (script/sql-statements "")))
     (is (empty? (script/sql-statements "   ")))
@@ -65,7 +65,7 @@
     (is (= [{:line 1, :column 1, :statement "1"}]
            (script/sql-statements "1;")))
     (is (= [{:line 1, :column 3, :statement "1"}]
-           (script/sql-statements "  1;")))    
+           (script/sql-statements "  1;")))
     (is (= [{:line 1, :column 1, :statement "1"} {:line 1, :column 3, :statement "2"}]
            (script/sql-statements "1;2")))
     (is (= [{:line 1, :column 1, :statement "1"} {:line 1, :column 3, :statement "2"}]
@@ -73,7 +73,7 @@
     (is (= [{:line 1, :column 1, :statement "1"}]
            (script/sql-statements "1;--2;")))
     (is (=  [{:line 1, :column 1, :statement "1"} {:line 1, :column 3, :statement "2';'3"}]
-           (script/sql-statements "1;2';'3;"))))
+            (script/sql-statements "1;2';'3;"))))
 
   (testing "newline processing"
     (is (= [{:line 3, :column 1, :statement "1"}]
@@ -86,10 +86,10 @@
            (script/sql-statements "1\n2;")))
     (is (= [{:line 1, :column 1, :statement "1 2"}]
            (script/sql-statements "1\n\n2;"))))
-    (is (= [{:line 1, :column 1, :statement "1 2"} {:line 2, :column 3, :statement "3 4"}]
-           (script/sql-statements "1\n2;3\n4;"))))
+  (is (= [{:line 1, :column 1, :statement "1 2"} {:line 2, :column 3, :statement "3 4"}]
+         (script/sql-statements "1\n2;3\n4;"))))
 
-(defn- script-first-non-whitespace [ script-name ]
+(defn- script-first-non-whitespace [script-name]
   (let [text (script/normalize (slurp (clojure.java.io/resource script-name)))
         in (rdr/source-logging-push-back-reader text)]
     (script/sql-skip-whitespace in)
@@ -103,7 +103,7 @@
     (is (= \1 (script-first-non-whitespace "leading-whitespace.txt")))
     (is (= \1 (script-first-non-whitespace "leading-newlines.txt")))))
 
-(defn- test-script-statements [ script-name ]
+(defn- test-script-statements [script-name]
 
   (script/sql-statements
    (script/normalize

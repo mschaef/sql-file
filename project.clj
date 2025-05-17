@@ -49,4 +49,6 @@
                  [org.clojure/tools.reader "1.5.0"]
                  [hikari-cp "3.1.0"]]
 
+  :plugins [[dev.weavejester/lein-cljfmt "0.13.0"]]
+
   :deploy-repositories [["releases" {:url "https://repo.clojars.org"}]])
