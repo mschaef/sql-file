@@ -44,10 +44,10 @@
                  [org.hsqldb/hsqldb "2.7.4"]
                  [org.hsqldb/sqltool "2.7.4"]
                  [org.clojure/java.jdbc "0.7.12"]
-                 [org.slf4j/log4j-over-slf4j "2.0.16"]
+                 [org.slf4j/log4j-over-slf4j "2.0.17"]
                  [org.clojure/tools.logging "1.3.0"]
-                 [org.clojure/tools.reader "1.5.0"]
-                 [hikari-cp "3.1.0"]]
+                 [org.clojure/tools.reader "1.5.2"]
+                 [hikari-cp "3.2.0"]]
 
   :plugins [[dev.weavejester/lein-cljfmt "0.13.0"]]
 
