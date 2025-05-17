@@ -38,6 +38,9 @@
           (core/backup-to-file-blocking conn "./backup-db-blocking.tgz")
           (core/backup-to-file-online conn "./backup-db-online.tgz"))
 
+        "defragment"
+        (core/checkpoint-defragment conn)
+
         "shell"
         (core/start-sqltool-shell conn)
 

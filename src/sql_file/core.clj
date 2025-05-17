@@ -123,6 +123,9 @@ schema in the target database instance."
             (recur)))))
     conn))
 
+(defn checkpoint-defragment [ conn ]
+  (jdbc/db-do-prepared conn "CHECKPOINT DEFRAG"))
+
 (defn backup-to-file-blocking [ conn output-path ]
   (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' BLOCKING")))
 
