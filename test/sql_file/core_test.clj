@@ -83,7 +83,6 @@
       (is (= 0 (core/get-schema-version conn "sql-file")))
       (is (=  (core/get-schema-version conn "test"))))))
 
-
 ;;; Schema replacement (-- sql-file: replaces <schema> <version>)
 
 (defn- table-exists? [conn table-name]
