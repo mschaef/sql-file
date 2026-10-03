@@ -50,13 +50,53 @@ version. If there is no such script, throws an exception."
         (catch Exception ex
           (throw (Exception. (str "Error running statement: " stmt) ex)))))))
 
-(defn- run-script [conn script-url]
-  "Run the database script at the given URL against a specific
-database connection."
+(defn- run-script [conn script-url script-text]
+  "Run the database script with the given text (read from the given
+URL) against a specific database connection."
   (log/info "Run DB script:" (str script-url))
-  (let [script-text (slurp script-url)]
-    (do-statements conn (map #(assoc % :url script-url)
-                             (script/sql-statements script-text)))))
+  (do-statements conn (map #(assoc % :url script-url)
+                           (script/sql-statements script-text))))
+
+;;; Script directives
+;;;
+;;; A schema script can carry directives to sql-file in its leading
+;;; comment block, one per line, of the form:
+;;;
+;;;   -- sql-file: <directive> <arguments...>
+;;;
+;;; The only directive at the moment is:
+;;;
+;;;   -- sql-file: replaces <schema-name> <schema-version>
+;;;
+;;; This declares that the script's schema version reproduces the
+;;; given version of another schema. In a database that already has
+;;; that other schema, the script is not run; the new schema version
+;;; is recorded as present instead. This is how one schema chain is
+;;; renamed, split into several, or merged with another.
+
+(def ^:private directive-regex #"^--\s*sql-file:\s*(.*?)\s*$")
+
+(def ^:private replaces-regex #"replaces\s+(\S+)\s+(\d+)")
+
+(defn- leading-comment-lines [script-text]
+  (->> (clojure.string/split-lines script-text)
+       (map clojure.string/trim)
+       (take-while #(or (= "" %) (.startsWith ^String % "--")))))
+
+(defn script-directives [script-text]
+  "Parse the sql-file directives in the leading comment block of a
+schema script, returning a map. Currently the only key is :replaces,
+a sequence of [schema-name schema-version] pairs. Unrecognized
+directives are an error, so that a misspelled directive can't be
+silently ignored."
+  (reduce (fn [directives line]
+            (if-let [[_ directive] (re-matches directive-regex line)]
+              (if-let [[_ schema-name schema-version] (re-matches replaces-regex directive)]
+                (update directives :replaces conj [schema-name (Integer/parseInt schema-version)])
+                (throw (Exception. (str "Unrecognized sql-file directive: " line))))
+              directives))
+          {:replaces []}
+          (leading-comment-lines script-text)))
 
 (defn get-schema-version [conn schema-name]
   "Retrieves the current version of a schema within a database managed
@@ -85,13 +125,49 @@ sql-file."
                   {:schema_name schema-name
                    :schema_version req-schema-version})))
 
+(declare ensure-schema)
+
+(defn- replaced-schemas-present [conn schema replaces]
+  "Given the schemas a script declares it replaces, determine whether
+they're already present in the database. Returns true if all of them
+are present (after bringing any older versions up to the declared
+version), false if none are, and throws if only some are, or if any
+is present at a later version than declared. (A later version has
+changes the replacing script doesn't reproduce.)"
+  (let [present (filter #(get-schema-version conn (first %)) replaces)]
+    (cond
+      (empty? present)
+      false
+
+      (not= (count present) (count replaces))
+      (throw (Exception. (str "Schema " schema " replaces " (vec replaces)
+                              ", but only " (vec present) " are present in the database.")))
+
+      :else
+      (do
+        (doseq [[old-name old-version] replaces]
+          (let [cur-version (get-schema-version conn old-name)]
+            (when (> cur-version old-version)
+              (throw (Exception. (str "Schema " schema " replaces " [old-name old-version]
+                                      ", but the database has " old-name " at version " cur-version "."))))
+            (ensure-schema conn [old-name old-version])))
+        true))))
+
 (defn- install-schema [conn schema]
   "Locate and run the script necessary to install the specified
-schema in the target database instance."
+schema in the target database instance. If the script declares that it
+replaces schemas already present in the database, the script is not
+run and the schema version is just recorded."
   (log/info "Installing schema:" schema)
   (let [[schema-name schema-version] schema]
     (try
-      (run-script conn (locate-schema-script conn schema-name schema-version))
+      (let [script-url (locate-schema-script conn schema-name schema-version)
+            script-text (slurp script-url)
+            replaces (:replaces (script-directives script-text))]
+        (if (replaced-schemas-present conn schema replaces)
+          (log/info "Schema" schema "replaces" replaces
+                    "which are already present. Recording it without running" (str script-url))
+          (run-script conn script-url script-text)))
       (catch Exception ex
         (throw (Exception. (str "Error installing schema: " schema) ex))))
     (set-schema-version! conn schema-name schema-version)))

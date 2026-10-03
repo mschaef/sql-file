@@ -23,7 +23,7 @@ It can be added to a [Leiningen](https://leiningen.org/) project with the
 following dependency:
 
 ```clojure
-[com.mschaef/sql-file "0.4.10"]
+[com.mschaef/sql-file "0.5.0"]
 ```
 
 ## Usage
@@ -71,6 +71,49 @@ The current version of a schema can be retrieved using
 (core/get-schema-version conn "test")
 ;; 2
 ```
+
+### Replacing a Schema
+
+Sometimes a schema chain needs to be renamed, split into several
+chains, or merged with another. A schema script can declare that it
+reproduces a version of another schema with a directive in its leading
+comment block:
+
+```sql
+-- sql-file: replaces legacy 16
+
+CREATE CACHED TABLE user ( ... );
+```
+
+When `sql-file` installs a script carrying this directive:
+
+* If the database doesn't have the `legacy` schema at all (a new
+  database, for example), the script runs normally.
+* If the database has `legacy` at version 16, the script is not run.
+  Its schema version is recorded as present, because its contents are
+  already in the database.
+* If the database has `legacy` at an earlier version, the `legacy`
+  scripts are run to bring it up to version 16 first, and then the
+  script's schema version is recorded as above.
+* If the database has `legacy` at a later version, installation fails.
+  The later version has changes the replacing script doesn't
+  reproduce.
+
+To split a chain, give the first script of each new chain the same
+`replaces` directive. To merge chains, list several `replaces`
+directives in one script. In that case, either all of the replaced
+schemas must be present in the database, or none of them.
+
+The replaced schema's row stays in the database, but nothing requests
+it again. Once every database has been opened with the new chains, the
+old chain's scripts can be deleted. A database still below the
+declared version will then fail with a message naming the missing
+script, rather than running the new chain's scripts over existing
+tables.
+
+Directives must appear before the first statement in the script. Any
+other `-- sql-file:` comment there is an error, so a misspelled
+directive can't be silently ignored.
 
 ## Diagnostics
 

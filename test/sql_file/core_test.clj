@@ -83,3 +83,101 @@
       (is (= 0 (core/get-schema-version conn "sql-file")))
       (is (=  (core/get-schema-version conn "test"))))))
 
+
+;;; Schema replacement (-- sql-file: replaces <schema> <version>)
+
+(defn- table-exists? [conn table-name]
+  (= 1 (query-scalar conn [(str "SELECT COUNT(*) FROM information_schema.tables"
+                                " WHERE table_schema = 'PUBLIC' AND table_name = ?")
+                           (.toUpperCase ^String table-name)])))
+
+(defn- exception-messages [ex]
+  (->> ex
+       (iterate #(.getCause ^Throwable %))
+       (take-while some?)
+       (map #(.getMessage ^Throwable %))))
+
+(defn- thrown-messages [f]
+  (try
+    (f)
+    []
+    (catch Exception ex
+      (exception-messages ex))))
+
+(deftest script-directive-parsing
+  (testing "no directives"
+    (is (= {:replaces []} (core/script-directives "-- just a comment\nCREATE TABLE x (y INT);"))))
+
+  (testing "directives are read from the leading comment block"
+    (is (= {:replaces [["legacy" 1] ["other" 0]]}
+           (core/script-directives (str "-- header\n\n"
+                                        "-- sql-file: replaces legacy 1\n"
+                                        "--sql-file:replaces   other 0  \n"
+                                        "CREATE TABLE x (y INT);")))))
+
+  (testing "directives after the first statement are ignored"
+    (is (= {:replaces []}
+           (core/script-directives (str "CREATE TABLE x (y INT);\n"
+                                        "-- sql-file: replaces legacy 1\n")))))
+
+  (testing "unrecognized directives are an error"
+    (is (thrown-with-msg? Exception #"Unrecognized sql-file directive"
+                          (core/script-directives "-- sql-file: replace legacy 1\n")))))
+
+(deftest replacing-schema-in-fresh-database
+  (jdbc/with-db-connection [conn (open-test-db ["successor" 1])]
+    (testing "the replacing script runs normally"
+      (is (= 1 (core/get-schema-version conn "successor")))
+      (is (table-exists? conn "legacy_a"))
+      (is (table-exists? conn "successor_c")))
+
+    (testing "the replaced schema is not installed"
+      (is (nil? (core/get-schema-version conn "legacy"))))))
+
+(deftest replacing-schema-already-present
+  (open-test-db ["legacy" 1])
+  ;; schema-successor-0 creates the legacy tables, so it would fail if run.
+  (jdbc/with-db-connection [conn (open-test-db ["successor" 1])]
+    (testing "the replacing schema is recorded without running its script"
+      (is (= 1 (core/get-schema-version conn "successor")))
+      (is (= 1 (core/get-schema-version conn "legacy"))))
+
+    (testing "later versions of the replacing schema run normally"
+      (is (table-exists? conn "successor_c")))))
+
+(deftest replacing-schema-at-older-version
+  (open-test-db ["legacy" 0])
+  (jdbc/with-db-connection [conn (open-test-db ["successor" 0])]
+    (testing "the replaced schema is brought up to the declared version first"
+      (is (= 1 (core/get-schema-version conn "legacy")))
+      (is (table-exists? conn "legacy_b")))
+
+    (testing "and then the replacing schema is recorded"
+      (is (= 0 (core/get-schema-version conn "successor"))))))
+
+(deftest replacing-schema-at-newer-version
+  (open-test-db ["legacy" 2])
+  (is (some #(re-find #"replaces \[\"legacy\" 1\], but the database has legacy at version 2" %)
+            (thrown-messages #(open-test-db ["successor" 0]))))
+  (jdbc/with-db-connection [conn (open-test-db ["legacy" 2])]
+    (is (nil? (core/get-schema-version conn "successor")))))
+
+(deftest replacing-schema-with-missing-scripts
+  (open-test-db ["gone" 0])
+  (is (some #(re-find #"Cannot find schema script: schema-gone-1.sql" %)
+            (thrown-messages #(open-test-db ["heir" 0])))))
+
+(deftest replacing-several-schemas
+  (testing "all of the replaced schemas must be present, or none"
+    (open-test-db ["legacy" 1])
+    (is (some #(re-find #"only \[\[\"legacy\" 1\]\] are present" %)
+              (thrown-messages #(open-test-db ["merged" 0])))))
+
+  (testing "when all are present, the replacing schema is recorded"
+    (open-test-db ["other" 0])
+    (jdbc/with-db-connection [conn (open-test-db ["merged" 0])]
+      (is (= 0 (core/get-schema-version conn "merged"))))))
+
+(deftest misspelled-directive
+  (is (some #(re-find #"Unrecognized sql-file directive: -- sql-file: replace legacy 1" %)
+            (thrown-messages #(open-test-db ["typo" 0])))))
