@@ -31,14 +31,33 @@
 (defn- schema-path [conn]
   (conj (get conn :schema-path []) ""))
 
-(defn- locate-schema-script [conn schema-name schema-version]
-  "Locate the schema script to install the given schema name and
-version. If there is no such script, throws an exception."
-  (let [basename (format "schema-%s-%s.sql" schema-name schema-version)]
-    (or (some identity
-              (map #(clojure.java.io/resource (format "%s%s" % basename))
-                   (schema-path conn)))
-        (throw (Exception. (str "Cannot find schema script: " basename " in search path " (schema-path conn)))))))
+(def ^:private legacy-id-regex #"(.+)-(\d+)")
+
+(defn- valid-schema-id? [schema-id]
+  (and (string? schema-id)
+       (<= 1 (count schema-id) 255)
+       (not (re-find #"\s" schema-id))))
+
+(defn- locate-schema-script [conn schema-id]
+  "Locate the script for a schema id: <id>.sql on the schema path, or
+for an id of the form <name>-<n>, the numbered script
+schema-<name>-<n>.sql. Returns a map with :url, and :legacy [name n]
+for a numbered script. Throws if there's no such script."
+  (let [basename (str schema-id ".sql")
+        legacy (when-let [[_ schema-name version] (re-matches legacy-id-regex schema-id)]
+                 [schema-name (Integer/parseInt version)])
+        legacy-basename (str "schema-" schema-id ".sql")
+        find (fn [name]
+               (some #(clojure.java.io/resource (str % name)) (schema-path conn)))]
+    (if-let [url (find basename)]
+      {:url url}
+      (if-let [url (and legacy (find legacy-basename))]
+        {:url url :legacy legacy}
+        (throw (Exception. (str "Cannot find schema script for " schema-id
+                                " (" (if legacy
+                                       (str basename " or " legacy-basename)
+                                       basename)
+                                ") in search path " (schema-path conn))))))))
 
 (defn do-statements [conn stmts]
   "Execute a sequence of statements against the given DB connection."
@@ -64,19 +83,28 @@ URL) against a specific database connection."
 ;;;
 ;;;   -- sql-file: <directive> <arguments...>
 ;;;
-;;; The only directive at the moment is:
+;;; The directives are:
 ;;;
+;;;   -- sql-file: requires <schema-id>
+;;;
+;;; The named schema must be installed before this one. A script can
+;;; have any number of these; they're installed in the order given.
+;;;
+;;;   -- sql-file: replaces <schema-id>
 ;;;   -- sql-file: replaces <schema-name> <schema-version>
 ;;;
-;;; This declares that the script's schema version reproduces the
-;;; given version of another schema. In a database that already has
-;;; that other schema, the script is not run; the new schema version
-;;; is recorded as present instead. This is how one schema chain is
-;;; renamed, split into several, or merged with another.
+;;; This declares that the script reproduces another schema (the
+;;; second form names a numbered schema, and is the same as
+;;; "replaces <schema-name>-<schema-version>"). In a database that
+;;; already has that other schema, the script is not run; it's
+;;; recorded as installed instead. This is how a schema is renamed,
+;;; or a chain of schemas split into several or merged.
 
 (def ^:private directive-regex #"^--\s*sql-file:\s*(.*?)\s*$")
 
-(def ^:private replaces-regex #"replaces\s+(\S+)\s+(\d+)")
+(def ^:private requires-regex #"requires\s+(\S+)")
+
+(def ^:private replaces-regex #"replaces\s+(\S+)(?:\s+(\d+))?")
 
 (defn- leading-comment-lines [script-text]
   (->> (clojure.string/split-lines script-text)
@@ -85,17 +113,20 @@ URL) against a specific database connection."
 
 (defn script-directives [script-text]
   "Parse the sql-file directives in the leading comment block of a
-schema script, returning a map. Currently the only key is :replaces,
-a sequence of [schema-name schema-version] pairs. Unrecognized
-directives are an error, so that a misspelled directive can't be
-silently ignored."
+schema script, returning a map with :requires and :replaces, each a
+vector of schema ids. Unrecognized directives are an error, so that a
+misspelled directive can't be silently ignored."
   (reduce (fn [directives line]
             (if-let [[_ directive] (re-matches directive-regex line)]
-              (if-let [[_ schema-name schema-version] (re-matches replaces-regex directive)]
-                (update directives :replaces conj [schema-name (Integer/parseInt schema-version)])
-                (throw (Exception. (str "Unrecognized sql-file directive: " line))))
+              (if-let [[_ schema-id] (re-matches requires-regex directive)]
+                (update directives :requires conj schema-id)
+                (if-let [[_ schema-id version] (re-matches replaces-regex directive)]
+                  (update directives :replaces conj (if version
+                                                      (str schema-id "-" version)
+                                                      schema-id))
+                  (throw (Exception. (str "Unrecognized sql-file directive: " line)))))
               directives))
-          {:replaces []}
+          {:requires [] :replaces []}
           (leading-comment-lines script-text)))
 
 ;;; Install tracking
@@ -210,76 +241,231 @@ are removed."
                                    :completed_on timestamp}))))
     (mirror-legacy-version! conn schema-name req-schema-version)))
 
+;;; Schema scripts and the dependency graph
+
+(defn- split-ids [s]
+  (if (clojure.string/blank? s)
+    []
+    (clojure.string/split s #"\n")))
+
+(defn- join-ids [ids]
+  (when (seq ids)
+    (clojure.string/join "\n" ids)))
+
+(defn- read-script [conn schema-id]
+  "Locate and read the script for a schema id, returning a map with
+:id, :url, :text, :requires (the effective requires: for a numbered
+script, the previous version first, then any declared), :replaces, and
+:legacy ([name n] for a numbered script)."
+  (when-not (valid-schema-id? schema-id)
+    (throw (Exception. (str "Invalid schema id: " (pr-str schema-id)))))
+  (let [{:keys [url legacy]} (locate-schema-script conn schema-id)
+        text (slurp url)
+        {:keys [requires replaces]} (script-directives text)
+        implicit (when legacy (apply legacy-requires legacy))]
+    {:id schema-id
+     :url url
+     :text text
+     :requires (vec (distinct (concat (when implicit [implicit]) requires)))
+     :replaces replaces
+     :legacy legacy}))
+
+(defn- installed-graph [conn]
+  "The installed schemas, as a map from id to {:requires [...]
+:replaces [...]}, from what was recorded at install time."
+  (into {} (map (fn [row]
+                  [(:schema_id row) {:requires (split-ids (:requires row))
+                                     :replaces (split-ids (:replaces row))}])
+                (installed-schemas conn))))
+
+(defn- schema-target-id [schema]
+  "Schemas are requested by id, or by the older [name n] vector."
+  (if (vector? schema)
+    (apply legacy-schema-id schema)
+    schema))
+
+(defn- install-order [conn targets]
+  "The schemas that need installing to provide the given targets, in
+dependency order: a depth-first, post-order walk taking targets in the
+order given and each script's requires in the order declared.
+Installed schemas aren't read or followed: they, and what they
+required, are already present. Returns a sequence of scripts (see
+read-script)."
+  (let [installed (installed-graph conn)
+        order (atom [])
+        done (atom #{})]
+    (letfn [(visit [schema-id path]
+              (when (some #{schema-id} path)
+                (throw (Exception. (str "Schema dependency cycle: "
+                                        (clojure.string/join " -> " (concat (drop-while #(not= schema-id %) path)
+                                                                            [schema-id]))))))
+              (when-not (or (installed schema-id) (@done schema-id))
+                (let [script (try
+                               (read-script conn schema-id)
+                               (catch Exception ex
+                                 (throw (Exception. (str "Cannot resolve schema " schema-id
+                                                         (when (seq path)
+                                                           (str ", required by " (last path))))
+                                                    ex))))
+                      path (conj path schema-id)]
+                  (doseq [required (:requires script)]
+                    (visit required path))
+                  (swap! done conj schema-id)
+                  (swap! order conj script))))]
+      (doseq [target targets]
+        (visit target [])))
+    @order))
+
+(defn- requires-closure [graph schema-id]
+  "schema-id and everything it requires, transitively, according to
+graph (a map from id to {:requires [...]})."
+  (loop [pending [schema-id]
+         seen #{}]
+    (if-let [[id & more] (seq pending)]
+      (if (seen id)
+        (recur more seen)
+        (recur (concat more (get-in graph [id :requires])) (conj seen id)))
+      seen)))
+
+(defn- script-requires-closure [conn installed schema-id]
+  "schema-id and everything it requires, transitively, reading scripts
+for schemas that aren't installed and using the installed graph for
+those that are. Scripts that can't be found are skipped."
+  (loop [pending [schema-id]
+         seen #{}]
+    (if-let [[id & more] (seq pending)]
+      (if (seen id)
+        (recur more seen)
+        (let [requires (if-let [node (installed id)]
+                         (:requires node)
+                         (try
+                           (:requires (read-script conn id))
+                           (catch Exception _ [])))]
+          (recur (concat more requires) (conj seen id))))
+      seen)))
+
 (declare ensure-schema)
 
-(defn- replaced-schemas-present [conn schema replaces]
+(defn- replaced-schema-present? [conn installed own replaced-id]
+  "A replaced schema is present if it's installed, or if part of it is:
+something it requires (transitively) is installed, other than what the
+replacing script itself requires (own, the closure of those). For a
+numbered schema, any installed version counts, even if the older
+scripts have since been deleted. (A later version than the replaced
+one is then caught as depending on it.)"
+  (let [partly-present? #(and (contains? installed %) (not (own %)))]
+    (or (contains? installed replaced-id)
+        (if-let [[_ schema-name] (re-matches legacy-id-regex replaced-id)]
+          (some #(and (legacy-schema-version schema-name %) (partly-present? %))
+                (keys installed))
+          (some partly-present? (script-requires-closure conn installed replaced-id))))))
+
+(defn- replaced-schemas-present [conn script]
   "Given the schemas a script declares it replaces, determine whether
 they're already present in the database. Returns true if all of them
-are present (after bringing any older versions up to the declared
-version), false if none are, and throws if only some are, or if any
-is present at a later version than declared. (A later version has
-changes the replacing script doesn't reproduce.) All of the checks are
-made before any replaced schema is brought up to date."
-  (let [current (map (fn [[old-name old-version]]
-                       [old-name old-version (get-schema-version conn old-name)])
-                     replaces)
-        present (filter #(some? (nth % 2)) current)]
+are present (after installing whatever they need to be up to date),
+false if none are, and throws if only some are, or if an installed
+schema depends on one of them. (Then the database has changes the
+replacing script doesn't reproduce.) All of the checks are made before
+anything is installed."
+  (let [replaces (:replaces script)
+        installed (installed-graph conn)
+        own (set (mapcat #(script-requires-closure conn installed %) (:requires script)))
+        present (filter #(replaced-schema-present? conn installed own %) replaces)]
     (cond
       (empty? present)
       false
 
       (not= (count present) (count replaces))
-      (throw (Exception. (str "Schema " schema " replaces " (vec replaces)
-                              ", but only " (vec (map #(vec (take 2 %)) present))
+      (throw (Exception. (str "Schema " (:id script) " replaces " (clojure.string/join ", " replaces)
+                              ", but only " (clojure.string/join ", " present)
                               " are present in the database.")))
 
       :else
       (do
-        (doseq [[old-name old-version cur-version] current]
-          (when (> cur-version old-version)
-            (throw (Exception. (str "Schema " schema " replaces " [old-name old-version]
-                                    ", but the database has " old-name " at version " cur-version ".")))))
-        (doseq [replaced replaces]
-          (ensure-schema conn replaced))
+        (doseq [replaced-id replaces
+                [installed-id _] installed
+                :when (and (not= installed-id replaced-id)
+                           (contains? (requires-closure installed installed-id) replaced-id))]
+          (throw (Exception. (str "Schema " (:id script) " replaces " replaced-id
+                                  ", but the database has " installed-id ", which depends on it."))))
+        (doseq [replaced-id replaces]
+          (ensure-schema conn replaced-id))
         true))))
 
-(defn- install-schema [conn schema]
-  "Locate and run the script necessary to install the specified
-schema in the target database instance. If the script declares that it
-replaces schemas already present in the database, the script is not
-run and the schema is just recorded as installed."
-  (log/info "Installing schema:" schema)
-  (let [[schema-name schema-version] schema
-        schema-id (legacy-schema-id schema-name schema-version)
-        requires (legacy-requires schema-name schema-version)]
+(defn- install-script [conn script]
+  "Install a single schema script whose requirements are already
+installed. If the script declares that it replaces schemas already
+present in the database, the script is not run and the schema is just
+recorded as installed."
+  (let [{:keys [id url text requires replaces legacy]} script]
+    (log/info "Installing schema:" id)
     (try
-      (let [script-url (locate-schema-script conn schema-name schema-version)
-            script-text (slurp script-url)
-            replaces (:replaces (script-directives script-text))]
-        (if (replaced-schemas-present conn schema replaces)
-          (let [timestamp (now)]
-            (log/info "Schema" schema "replaces" replaces
-                      "which are already present. Recording it without running" (str script-url))
-            (insert-installed! conn {:schema_id schema-id
-                                     :how "recorded"
-                                     :requires requires
-                                     :replaces (clojure.string/join "\n" (map #(apply legacy-schema-id %) replaces))
-                                     :started_on timestamp
-                                     :completed_on timestamp}))
-          (do
-            (insert-installed! conn {:schema_id schema-id
-                                     :how "run"
-                                     :requires requires
-                                     :replaces (when (seq replaces)
-                                                 (clojure.string/join "\n" (map #(apply legacy-schema-id %) replaces)))
-                                     :started_on (now)})
-            (run-script conn script-url script-text)
-            (jdbc/update! conn :sql_file_installed
-                          {:completed_on (now)}
-                          ["schema_id = ?" schema-id]))))
+      (if (replaced-schemas-present conn script)
+        (let [timestamp (now)]
+          (log/info "Schema" id "replaces" (clojure.string/join ", " replaces)
+                    "which are already present. Recording it without running" (str url))
+          (insert-installed! conn {:schema_id id
+                                   :how "recorded"
+                                   :requires (join-ids requires)
+                                   :replaces (join-ids replaces)
+                                   :started_on timestamp
+                                   :completed_on timestamp}))
+        (do
+          (insert-installed! conn {:schema_id id
+                                   :how "run"
+                                   :requires (join-ids requires)
+                                   :replaces (join-ids replaces)
+                                   :started_on (now)})
+          (run-script conn url text)
+          (jdbc/update! conn :sql_file_installed
+                        {:completed_on (now)}
+                        ["schema_id = ?" id])))
       (catch Exception ex
-        (throw (Exception. (str "Error installing schema: " schema) ex))))
-    (mirror-legacy-version! conn schema-name schema-version)))
+        (throw (Exception. (str "Error installing schema: " id) ex))))
+    (when legacy
+      (apply mirror-legacy-version! conn legacy))))
+
+(defn- install-targets [conn targets]
+  (doseq [script (install-order conn (map schema-target-id targets))]
+    ;; Installing a replacing script can install other schemas first
+    ;; (the ones it replaces), so check again.
+    (when-not (contains? (set (all-schema-ids conn)) (:id script))
+      (install-script conn script))))
+
+(defn- uncovered-schemas [conn targets]
+  "Installed schemas not reachable from the targets through requires
+and replaces. These usually mean older code running against a newer
+database. sql-file's own schemas don't count."
+  (let [installed (installed-graph conn)
+        reachable (loop [pending (map schema-target-id targets)
+                         seen #{}]
+                    (if-let [[id & more] (seq pending)]
+                      (if (seen id)
+                        (recur more seen)
+                        (let [{:keys [requires replaces]}
+                              (or (installed id)
+                                  (try
+                                    (read-script conn id)
+                                    (catch Exception _ {})))]
+                          (recur (concat more requires replaces) (conj seen id))))
+                      seen))]
+    (sort (remove #(or (reachable %) (.startsWith ^String % "sql-file-"))
+                  (keys installed)))))
+
+(defn- policy [desc option]
+  "How to handle a condition that's an error in production and a
+warning in development: :error or :warn."
+  (get desc option (if (:development-mode desc) :warn :error)))
+
+(defn- check-uncovered-schemas [conn desc targets]
+  (when-let [uncovered (seq (uncovered-schemas conn targets))]
+    (let [message (str "Installed schemas not covered by the requested schemas: "
+                       (clojure.string/join ", " uncovered)
+                       ". Is this older code running against a newer database?")]
+      (if (= :warn (policy desc :on-uncovered-schema))
+        (log/warn message)
+        (throw (Exception. message))))))
 
 ;;; sql-file's own tables
 
@@ -350,20 +536,12 @@ request a memory database."
     (:schema-path desc) (assoc :schema-path (:schema-path desc))))
 
 (defn ensure-schema [conn schema]
-  "Locate and run the scripts necessary to install the specified
-schema in the target database instance."
+  "Install the given schema, and anything it requires, if they aren't
+already installed. The schema is an id, or a numbered schema as
+[name n]."
   (log/debug "Ensuring schema:" schema)
-  (let [[req-schema-name req-schema-version] schema]
-    (loop []
-      (let [cur-schema-version (or (get-schema-version conn req-schema-name) -1)]
-        (if (= cur-schema-version req-schema-version)
-          (log/debug "Schema" schema "confirmed present.")
-          (do
-            (if (< cur-schema-version req-schema-version)
-              (install-schema conn [req-schema-name (+ cur-schema-version 1)])
-              (throw (Exception. (str "Cannot downgrade schema " req-schema-name " from version " cur-schema-version " to " req-schema-version))))
-            (recur)))))
-    conn))
+  (install-targets conn [schema])
+  conn)
 
 (defn checkpoint-defragment [conn]
   (jdbc/db-do-prepared conn "CHECKPOINT DEFRAG"))
@@ -383,12 +561,25 @@ schema in the target database instance."
     (.execute)))
 
 (defn open-local [desc]
+  "Open the database described by desc, installing sql-file's own
+tables and the schemas listed in :schemas (ids, or [name n] for
+numbered schemas), along with everything they require. Options:
+
+  :name - the HSQLDB database name (a file path, or mem:<name>)
+  :schema-path - directories (resource path prefixes) to search for
+     schema scripts, in addition to the root
+  :schemas - the schemas the application needs
+  :development-mode - when true, conditions that are errors in
+     production are warnings instead
+  :on-uncovered-schema - :error or :warn, for installed schemas the
+     requested schemas don't cover (default from :development-mode)"
   (log/info "Opening sql-file:" desc)
   (let [conn (hsqldb-conn desc)]
     (ensure-sql-file-tables conn)
     (check-incomplete-installs conn)
-    (doseq [schema (get desc :schemas [])]
-      (ensure-schema conn schema))
+    (let [targets (get desc :schemas [])]
+      (check-uncovered-schemas conn desc targets)
+      (install-targets conn targets))
     conn))
 
 (defn open-pool [desc]

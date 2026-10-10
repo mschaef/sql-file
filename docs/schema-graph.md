@@ -177,7 +177,12 @@ see Incomplete installs.
 A script with `replaces R` (possibly several):
 
 * R is "present" if R, or anything R requires (transitively), is
-  installed. This generalizes "the old chain has a row".
+  installed, excluding what the replacing script itself requires
+  (transitively). This generalizes "the old chain has a row": a
+  dependency the replacing script shares with R (a common base
+  schema, say) is a prerequisite, not part of R. For a numbered R
+  (`<name>-<n>`), any installed `<name>-<k>` counts, so this works
+  even after the old chain's scripts are deleted.
 * None present: run the script normally.
 * All present: install R (with whatever it requires that's missing),
   then record the script without running it.
@@ -203,7 +208,10 @@ This replaces the "Cannot downgrade" check. Installed schemas that
 aren't reachable from the targets (through `requires` and `replaces`)
 usually mean old code running against a newer database, for example
 after a rollback. That's an error in production and a warning in
-development.
+development. sql-file's own schemas (`sql-file-*`) are exempt. The
+check is made by `open-local` (which knows the whole request) before
+anything is installed; `ensure-schema`, which installs a single schema,
+doesn't make it.
 
 ## Digests
 
@@ -300,7 +308,7 @@ separate steps of the work, each with tests in the existing style
    `sql_file_schema`, start/finish times, incomplete-install detection.
    Existing numbered chains behave as before; `replaces` checks all
    replaced schemas before running anything.
-2. **Step 2: ids and the dependency graph.** String ids, `requires`,
+2. **Step 2: ids and the dependency graph.** (Done.) String ids, `requires`,
    resolution and topological install, legacy naming, `replaces` by
    id, the uncovered-schema check, `:development-mode`.
 3. **Step 3: digests.** Computation, storage, checking and adoption for

@@ -39,9 +39,18 @@
 
 (use-fixtures :each with-clean-db)
 
-(defn- open-test-db [schema]
-  (-> (core/open-local {:name test-db-name})
-      (core/ensure-schema schema)))
+(defn- open-test-db
+  "Open the test database with the given schemas. Many tests open the
+same database several times with different schemas, so installed
+schemas the request doesn't cover are only a warning here."
+  [& schemas]
+  (core/open-local {:name test-db-name
+                    :schemas (vec schemas)
+                    :on-uncovered-schema :warn}))
+
+(defn- open-test-db-strictly [& schemas]
+  (core/open-local {:name test-db-name
+                    :schemas (vec schemas)}))
 
 (deftest create-memory-database
   (jdbc/with-db-connection [conn (open-test-db ["test" 0])]
@@ -55,9 +64,9 @@
       (is (= 1 (core/get-schema-version conn "sql-file")))
       (is (= 1 (core/get-schema-version conn "test")))))
 
-  (testing "cannot downgrade existing database"
-    (is (thrown-with-msg? Exception #"Cannot downgrade schema test from version 1 to 0"
-                          (jdbc/with-db-connection [conn (open-test-db ["test" 0])])))))
+  (testing "older code against a newer database is detected"
+    (is (thrown-with-msg? Exception #"Installed schemas not covered by the requested schemas: test-1"
+                          (open-test-db-strictly ["test" 0])))))
 
 (deftest set-schema-version!
   (jdbc/with-db-connection [conn (open-test-db ["test" 0])]
@@ -75,7 +84,7 @@
 
 (deftest failed-schema-execution
   (testing "Upgrade to bad script fails"
-    (is (thrown-with-msg? Exception #"Error installing schema: \[\"test\" 2\]"
+    (is (thrown-with-msg? Exception #"Error installing schema: test-2"
                           (jdbc/with-db-connection [conn (open-test-db ["test" 2])]))))
 
   (testing "The failed script is recorded as started but not completed"
@@ -112,17 +121,21 @@
 
 (deftest script-directive-parsing
   (testing "no directives"
-    (is (= {:replaces []} (core/script-directives "-- just a comment\nCREATE TABLE x (y INT);"))))
+    (is (= {:requires [] :replaces []} (core/script-directives "-- just a comment\nCREATE TABLE x (y INT);"))))
 
   (testing "directives are read from the leading comment block"
-    (is (= {:replaces [["legacy" 1] ["other" 0]]}
+    (is (= {:requires ["base" "dir/lib-1"]
+            :replaces ["legacy-1" "other-0" "renamed/thing"]}
            (core/script-directives (str "-- header\n\n"
+                                        "-- sql-file: requires base\n"
                                         "-- sql-file: replaces legacy 1\n"
                                         "--sql-file:replaces   other 0  \n"
+                                        "-- sql-file: replaces renamed/thing\n"
+                                        "-- sql-file: requires dir/lib-1\n"
                                         "CREATE TABLE x (y INT);")))))
 
   (testing "directives after the first statement are ignored"
-    (is (= {:replaces []}
+    (is (= {:requires [] :replaces []}
            (core/script-directives (str "CREATE TABLE x (y INT);\n"
                                         "-- sql-file: replaces legacy 1\n")))))
 
@@ -166,20 +179,20 @@
 
 (deftest replacing-schema-at-newer-version
   (open-test-db ["legacy" 2])
-  (is (some #(re-find #"replaces \[\"legacy\" 1\], but the database has legacy at version 2" %)
+  (is (some #(re-find #"replaces legacy-1, but the database has legacy-2, which depends on it" %)
             (thrown-messages #(open-test-db ["successor" 0]))))
   (jdbc/with-db-connection [conn (open-test-db ["legacy" 2])]
     (is (nil? (core/get-schema-version conn "successor")))))
 
 (deftest replacing-schema-with-missing-scripts
   (open-test-db ["gone" 0])
-  (is (some #(re-find #"Cannot find schema script: schema-gone-1.sql" %)
+  (is (some #(re-find #"Cannot find schema script for gone-1 \(gone-1.sql or schema-gone-1.sql\)" %)
             (thrown-messages #(open-test-db ["heir" 0])))))
 
 (deftest replacing-several-schemas
   (testing "all of the replaced schemas must be present, or none"
     (open-test-db ["legacy" 1])
-    (is (some #(re-find #"only \[\[\"legacy\" 1\]\] are present" %)
+    (is (some #(re-find #"replaces legacy-1, other-0, but only legacy-1 are present" %)
               (thrown-messages #(open-test-db ["merged" 0])))))
 
   (testing "when all are present, the replacing schema is recorded"
@@ -194,7 +207,7 @@
 (deftest replaced-schemas-are-all-checked-first
   (open-test-db ["legacy" 0])
   (open-test-db ["other" 1])
-  (is (some #(re-find #"replaces \[\"other\" 0\], but the database has other at version 1" %)
+  (is (some #(re-find #"replaces other-0, but the database has other-1, which depends on it" %)
             (thrown-messages #(open-test-db ["merged" 0]))))
   (testing "no replaced schema was upgraded before the failure"
     (jdbc/with-db-connection [conn (open-test-db ["other" 1])]
@@ -261,3 +274,110 @@
     (is (= ["ssv-0"]
            (filter #(.startsWith ^String % "ssv") (map :schema_id (core/installed-schemas conn)))))
     (is (= 0 (query-scalar conn ["SELECT schema_version FROM sql_file_schema WHERE schema_name = 'ssv'"])))))
+
+;;; Schema ids and the dependency graph
+
+(defn- install-log [conn]
+  (query-column conn ["SELECT schema_id FROM install_log ORDER BY seq"]))
+
+(defn- installed-ids [conn prefix]
+  (filter #(.startsWith ^String % prefix) (map :schema_id (core/installed-schemas conn))))
+
+(deftest dependency-graph-install
+  (jdbc/with-db-connection [conn (open-test-db "graph/top")]
+    (testing "dependencies install first, each once, in declared order"
+      (is (= ["graph/base" "graph/left" "graph/right" "graph/top"] (install-log conn))))
+
+    (testing "each installed schema records its requires"
+      (is (= "graph/left\ngraph/right" (:requires (installed-row conn "graph/top"))))
+      (is (= "run" (:how (installed-row conn "graph/top"))))))
+
+  (testing "only what's missing is installed later"
+    (jdbc/with-db-connection [conn (open-test-db "graph/top" "graph/top-rl")]
+      (is (= ["graph/base" "graph/left" "graph/right" "graph/top" "graph/top-rl"]
+             (install-log conn))))))
+
+(deftest independent-branches-install-in-declared-order
+  (jdbc/with-db-connection [conn (open-test-db "graph/top-rl")]
+    (is (= ["graph/base" "graph/right" "graph/left" "graph/top-rl"] (install-log conn)))))
+
+(deftest numbered-and-named-schemas-together
+  (jdbc/with-db-connection [conn (open-test-db "graph/uses-legacy")]
+    (testing "a named schema can require a numbered one"
+      (is (= 1 (core/get-schema-version conn "test")))
+      (is (= ["test-0" "test-1"] (installed-ids conn "test-")))
+      (is (= ["graph/base" "graph/uses-legacy"] (install-log conn))))
+
+    (testing "numbered schemas are still mirrored for older sql-file"
+      (is (= 1 (query-scalar conn ["SELECT schema_version FROM sql_file_schema WHERE schema_name = 'test'"]))))
+
+    (testing "named schemas aren't"
+      (is (= 0 (query-scalar conn ["SELECT COUNT(*) FROM sql_file_schema WHERE schema_name LIKE 'graph%'"]))))))
+
+(deftest installed-schemas-are-not-reread
+  (jdbc/with-db-connection [conn (open-test-db)]
+    ;; There's no script for ghost/a: it stands in for a script that
+    ;; was installed and has since been deleted.
+    (jdbc/insert! conn :sql_file_installed {:schema_id "ghost/a" :how "recorded"}))
+  (jdbc/with-db-connection [conn (open-test-db "graph/uses-ghost")]
+    (is (some? (installed-row conn "graph/uses-ghost")))))
+
+(deftest dependency-cycles-are-reported
+  (is (some #(re-find #"Schema dependency cycle: cycle/a -> cycle/b -> cycle/c -> cycle/a" %)
+            (thrown-messages #(open-test-db "cycle/a")))))
+
+(deftest missing-dependencies-are-reported
+  (is (some #(re-find #"Cannot resolve schema missing/nope, required by missing/a" %)
+            (thrown-messages #(open-test-db "missing/a"))))
+  (is (some #(re-find #"Cannot find schema script for missing/nope \(missing/nope.sql\)" %)
+            (thrown-messages #(open-test-db "missing/a")))))
+
+(deftest invalid-schema-ids-are-reported
+  (is (some #(re-find #"Invalid schema id: \"has space\"" %)
+            (thrown-messages #(open-test-db "has space")))))
+
+(deftest replacing-by-id-in-fresh-database
+  (jdbc/with-db-connection [conn (open-test-db "renamed/left")]
+    (testing "what the replacing script itself requires doesn't make the replaced schema present"
+      (is (= ["graph/base" "renamed/left"] (install-log conn)))
+      (is (nil? (installed-row conn "graph/left"))))))
+
+(deftest replacing-by-id-when-the-replaced-schema-is-present
+  (open-test-db "graph/left")
+  (jdbc/with-db-connection [conn (open-test-db "renamed/left")]
+    (is (= ["graph/base" "graph/left"] (install-log conn)))
+    (is (= "recorded" (:how (installed-row conn "renamed/left"))))
+    (is (= "graph/left" (:replaces (installed-row conn "renamed/left"))))))
+
+(deftest replacing-by-id-when-part-of-the-replaced-schema-is-present
+  ;; graph/left is part of graph/top, and not something renamed/top
+  ;; requires itself.
+  (open-test-db "graph/left")
+  (jdbc/with-db-connection [conn (open-test-db "renamed/top")]
+    (testing "the replaced schema is completed, then the replacing one recorded"
+      (is (= ["graph/base" "graph/left" "graph/right" "graph/top"] (install-log conn)))
+      (is (= "run" (:how (installed-row conn "graph/top"))))
+      (is (= "recorded" (:how (installed-row conn "renamed/top"))))))
+
+  (testing "replaced schemas count as covered by the replacing one"
+    (is (some? (open-test-db-strictly "renamed/top")))))
+
+(deftest replacing-by-id-when-something-depends-on-the-replaced-schema
+  (open-test-db "graph/top")
+  (is (some #(re-find #"replaces graph/left, but the database has graph/top, which depends on it" %)
+            (thrown-messages #(open-test-db "renamed/left")))))
+
+(deftest uncovered-schemas
+  (open-test-db-strictly "graph/top")
+  (testing "installed schemas the request doesn't reach are an error by default"
+    (is (thrown-with-msg? Exception #"not covered by the requested schemas: graph/right, graph/top"
+                          (open-test-db-strictly "graph/left"))))
+
+  (testing "and a warning in development mode, or when asked"
+    (is (some? (core/open-local {:name test-db-name :schemas ["graph/left"] :development-mode true})))
+    (is (some? (core/open-local {:name test-db-name :schemas ["graph/left"] :on-uncovered-schema :warn}))))
+
+  (testing "an explicit setting overrides development mode"
+    (is (thrown? Exception
+                 (core/open-local {:name test-db-name :schemas ["graph/left"]
+                                   :development-mode true :on-uncovered-schema :error})))))

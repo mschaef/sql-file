@@ -32,84 +32,117 @@ Example usage:
 
 ```clojure
 (require '[clojure.java.jdbc :as jdbc])
-(require '[sql-file.core :as core])
+(require '[sql-file.core :as sql-file])
 
-(jdbc/query (sql-file/open-local {:name "test-db" :schemas [ [ "test" 0 ] ]})
-   ["select count(*) from point]))
-;; 0
+(def conn (sql-file/open-local {:name "test-db"
+                                :schemas ["points/0001-add-z"]}))
+
+(jdbc/query conn ["select count(*) from point"])
+;; ({:c1 0})
 ```
 
-This example creates a file-based HSQLDB database named `test-db`, and
-automatically loads version 0 of the `test` schema from
-`resources/schema-test-0.sql`.
+This example opens (creating, if necessary) a file-based HSQLDB
+database named `test-db`, and installs the schema
+`points/0001-add-z` from `resources/points/0001-add-z.sql`, along with
+anything it requires.
 
-### Migrations
+### Schema Scripts and Dependencies
 
-`sql-file` supports automatic forward migrations of database schemas
-through the use of sequential version numbers.  To illustrate, this
-`open-local` call requests version 2 of the `test` schema.
+Each schema script is identified by a schema id: its path on the
+classpath, without the `.sql` extension. Ids can contain `/`, to
+organize scripts into directories, but not whitespace. Any ordering in
+the ids (zero-padded numbers, for example) is for the people reading a
+directory listing; `sql-file` doesn't rely on it.
 
-```clojure
-(sql-file/open-local {:name "test-db" :schemas [ [ "test" 2 ] ]})
+A script declares the schemas it depends on in its leading comment
+block:
+
+```sql
+-- sql-file: requires points/0000-initial
+
+ALTER TABLE point ADD z INT DEFAULT 0 NOT NULL;
 ```
 
-When opening a database, `sql-file` will compare the requested schema
-version with the version already loaded in the database. It will then
-run any necessary schema scripts in numerical order to ensure the
-requested schema is present in the database. In a new database, this
-call will result in three schema creation scripts being loaded and
-applied in succession: `resources/schema-test-0.sql`,
-`resources/schema-test-1.sql`, and finally
-`resources/schema-test-2.sql`. If the database already contains schema
-version `0`, then just `resources/schema-test-1.sql` will be run
-`resources/schema-test-2.sql`.
+A script can have any number of `requires` directives. When opening a
+database, `sql-file` reads the scripts named in `:schemas`, follows
+their `requires`, and installs whatever isn't installed yet, each
+script after everything it requires. Scripts that don't depend on each
+other are installed in the order they're named in `:schemas`, and in
+`requires` directives, so the order is the same every time.
 
-The current version of a schema can be retrieved using
-`get-schema-version`:
+A missing script, a dependency cycle (reported as
+`a -> b -> c -> a`), or an invalid id is an error. Schemas that are
+already installed aren't read again, so scripts can be deleted once
+every database has them.
+
+`:schema-path` lists additional resource directories to search for
+scripts, before the root of the classpath.
+
+### Numbered Schemas
+
+Scripts named `schema-<name>-<n>.sql`, the scheme used by earlier
+versions of `sql-file`, still work. Their id is `<name>-<n>`, and each
+version implicitly requires the one before it. They can be requested by
+id or with the older `[name n]` form:
 
 ```clojure
-(core/get-schema-version conn "test")
+(sql-file/open-local {:name "test-db" :schemas [["test" 2]]})
+```
+
+In a new database, this installs `schema-test-0.sql`,
+`schema-test-1.sql` and `schema-test-2.sql`, in that order. Named and
+numbered schemas can depend on each other.
+
+The highest installed version of a numbered schema can be retrieved
+using `get-schema-version`:
+
+```clojure
+(sql-file/get-schema-version conn "test")
 ;; 2
 ```
 
 ### Replacing a Schema
 
-Sometimes a schema chain needs to be renamed, split into several
-chains, or merged with another. A schema script can declare that it
-reproduces a version of another schema with a directive in its leading
-comment block:
+Sometimes a schema needs to be renamed, or a chain of schemas split
+into several or merged. A schema script can declare that it reproduces
+another schema with a directive in its leading comment block:
 
 ```sql
--- sql-file: replaces legacy 16
+-- sql-file: replaces legacy-16
 
 CREATE CACHED TABLE user ( ... );
 ```
 
-When `sql-file` installs a script carrying this directive:
+(For a numbered schema, `replaces legacy 16` means the same thing.)
 
-* If the database doesn't have the `legacy` schema at all (a new
-  database, for example), the script runs normally.
-* If the database has `legacy` at version 16, the script is not run.
-  Its schema version is recorded as present, because its contents are
-  already in the database.
-* If the database has `legacy` at an earlier version, the `legacy`
-  scripts are run to bring it up to version 16 first, and then the
-  script's schema version is recorded as above.
-* If the database has `legacy` at a later version, installation fails.
-  The later version has changes the replacing script doesn't
-  reproduce.
+The replaced schema is present in a database if it's installed, or
+part of it is: something it requires is installed, other than what the
+replacing script itself requires. For a numbered schema, any installed
+version counts. When `sql-file` installs a script carrying this
+directive:
+
+* If the replaced schema isn't present (a new database, for example),
+  the script runs normally.
+* If it's installed, the script is not run. It's recorded as
+  installed, because its contents are already in the database.
+* If only part of it is present (for a numbered schema, an earlier
+  version), the replaced schema is installed first, and then the
+  script is recorded as above.
+* If an installed schema depends on the replaced one (for a numbered
+  schema, a later version is installed), installation fails. The
+  database has changes the replacing script doesn't reproduce.
 
 To split a chain, give the first script of each new chain the same
 `replaces` directive. To merge chains, list several `replaces`
 directives in one script. In that case, either all of the replaced
-schemas must be present in the database, or none of them.
+schemas must be present in the database, or none of them. All of these
+checks are made before anything is installed.
 
-The replaced schema's row stays in the database, but nothing requests
-it again. Once every database has been opened with the new chains, the
-old chain's scripts can be deleted. A database still below the
-declared version will then fail with a message naming the missing
-script, rather than running the new chain's scripts over existing
-tables.
+The replaced schema's record stays in the database, but nothing
+requests it again. Once every database has been opened with the new
+scripts, the old scripts can be deleted. A database that still needs
+them will then fail with a message naming the missing script, rather
+than running the new scripts over existing tables.
 
 Directives must appear before the first statement in the script. Any
 other `-- sql-file:` comment there is an error, so a misspelled
@@ -118,11 +151,11 @@ directive can't be silently ignored.
 ### Installation Records
 
 `sql-file` records each installed schema script in the table
-`sql_file_installed`, one row per script. Version `n` of a numbered
-schema `name` has the id `name-n`. Each row records how the script was
-installed (`run`, `recorded` under a `replaces` directive, or
-`migrated` from an older `sql-file`), the script it depends on, and
-when it started and finished. `installed-schemas` returns these rows.
+`sql_file_installed`, one row per script. Each row records how the
+script was installed (`run`, `recorded` under a `replaces` directive,
+or `migrated` from an older `sql-file`), what it requires and
+replaces, and when it started and finished. `installed-schemas`
+returns these rows.
 
 The row for a script is written before the script runs, and marked
 complete when it finishes. If a script fails or is interrupted partway
@@ -134,8 +167,16 @@ repairing by hand and the script's row deleting from
 
 Databases created by earlier versions of `sql-file` are migrated
 automatically the first time they're opened. The older
-`sql_file_schema` table is still kept up to date, so an application
-can be rolled back to an earlier `sql-file`.
+`sql_file_schema` table is still kept up to date for numbered schemas,
+so an application can be rolled back to an earlier `sql-file`.
+
+### Schemas Not Covered by the Request
+
+When opening a database, installed schemas that the requested schemas
+don't reach (through `requires` and `replaces`) usually mean older code
+running against a newer database, for example after a rollback. This
+is an error by default, and a warning with `:development-mode true`.
+`:on-uncovered-schema` (`:error` or `:warn`) overrides either.
 
 ## Diagnostics
 
