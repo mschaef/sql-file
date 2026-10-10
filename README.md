@@ -23,7 +23,7 @@ It can be added to a [Leiningen](https://leiningen.org/) project with the
 following dependency:
 
 ```clojure
-[com.mschaef/sql-file "0.5.0"]
+[com.mschaef/sql-file "0.6.0"]
 ```
 
 ## Usage
@@ -114,6 +114,28 @@ tables.
 Directives must appear before the first statement in the script. Any
 other `-- sql-file:` comment there is an error, so a misspelled
 directive can't be silently ignored.
+
+### Installation Records
+
+`sql-file` records each installed schema script in the table
+`sql_file_installed`, one row per script. Version `n` of a numbered
+schema `name` has the id `name-n`. Each row records how the script was
+installed (`run`, `recorded` under a `replaces` directive, or
+`migrated` from an older `sql-file`), the script it depends on, and
+when it started and finished. `installed-schemas` returns these rows.
+
+The row for a script is written before the script runs, and marked
+complete when it finishes. If a script fails or is interrupted partway
+through, the next attempt to open the database fails with a message
+naming it: the database may have been partly changed (HSQLDB doesn't
+roll back schema changes), so it needs restoring from a backup, or
+repairing by hand and the script's row deleting from
+`sql_file_installed`, before continuing.
+
+Databases created by earlier versions of `sql-file` are migrated
+automatically the first time they're opened. The older
+`sql_file_schema` table is still kept up to date, so an application
+can be rolled back to an earlier `sql-file`.
 
 ## Diagnostics
 

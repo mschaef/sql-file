@@ -123,8 +123,14 @@ before anything the application asks for:
   `<name>-0` through `<name>-<n>` with `how = 'migrated'`, no times
   and no digest. `sql-file-0` and `sql-file-1` themselves are recorded
   the same way.
-* `sql_file_schema` is left in place but no longer written. It can be
-  dropped by a later `sql-file-2`.
+* `sql_file_schema` is kept up to date for numbered schemas (sql-file's
+  own row stays at 0), so an application can be rolled back to an
+  older sql-file without it re-running scripts. It can be dropped by a
+  later `sql-file-2` once rolling back past 0.6 is no longer a concern.
+* On a new database, `sql-file-0` is still run (creating
+  `sql_file_schema`) for the same reason.
+* The `sql-file-1` row is written last, so an interrupted migration is
+  simply repeated on the next open.
 
 ## Installation
 
@@ -285,20 +291,22 @@ Enabled with `:track-statements true`, which defaults to the value of
 
 ## Phases and releases
 
-Each phase is a release, with tests in the existing style (small
-fixture scripts under `test/resources`, in-memory databases).
+All of the phases below go into a single 0.6.0 release; they're
+separate steps of the work, each with tests in the existing style
+(small fixture scripts under `test/resources`, in-memory databases).
+1.0.0 is a later decision.
 
-1. **0.6.0: tracking table.** `sql-file-1`, migration of
+1. **Step 1: tracking table.** (Done.) `sql-file-1`, migration of
    `sql_file_schema`, start/finish times, incomplete-install detection.
    Existing numbered chains behave as before; `replaces` checks all
    replaced schemas before running anything.
-2. **0.7.0: ids and the dependency graph.** String ids, `requires`,
+2. **Step 2: ids and the dependency graph.** String ids, `requires`,
    resolution and topological install, legacy naming, `replaces` by
    id, the uncovered-schema check, `:development-mode`.
-3. **0.8.0: digests.** Computation, storage, checking and adoption for
+3. **Step 3: digests.** Computation, storage, checking and adoption for
    migrated rows.
-4. **0.9.0: statement-level tracking and resume.**
-5. **Later:** remove legacy `[name n]` requests and
+4. **Step 4: statement-level tracking and resume.**
+5. **Later (possibly 1.0.0):** remove legacy `[name n]` requests and
    `get/set-schema-version`; drop `sql_file_schema`. Possibly 1.0.0.
 
 Test coverage to add along the way: diamond dependencies (installed
@@ -311,7 +319,7 @@ an edited applied statement.
 
 ## Effect on toto, stuffastocking and ectcommon
 
-Nothing has to change when they move to 0.6.0 through 0.8.0. Their
+Nothing has to change when they move to 0.6.0. Their
 existing scripts (`ectcommon-0`, `todo-0`, `stocking-5`, the frozen
 `toto-*`) keep their legacy ids. New scripts can use the new style,
 for example `ectcommon/0001-session-key` with

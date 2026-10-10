@@ -46,13 +46,13 @@
 (deftest create-memory-database
   (jdbc/with-db-connection [conn (open-test-db ["test" 0])]
     (testing "schema versions are reachable via API and correct."
-      (is (= 0 (core/get-schema-version conn "sql-file")))
+      (is (= 1 (core/get-schema-version conn "sql-file")))
       (is (= 0 (core/get-schema-version conn "test"))))))
 
 (deftest create-and-upgrade-memory-database
   (jdbc/with-db-connection [conn (open-test-db ["test" 1])]
     (testing "schema versions are reachable via API and correct."
-      (is (= 0 (core/get-schema-version conn "sql-file")))
+      (is (= 1 (core/get-schema-version conn "sql-file")))
       (is (= 1 (core/get-schema-version conn "test")))))
 
   (testing "cannot downgrade existing database"
@@ -78,10 +78,17 @@
     (is (thrown-with-msg? Exception #"Error installing schema: \[\"test\" 2\]"
                           (jdbc/with-db-connection [conn (open-test-db ["test" 2])]))))
 
-  (testing "Schema versions correct after failure."
-    (jdbc/with-db-connection [conn (open-test-db ["test" 1])]
-      (is (= 0 (core/get-schema-version conn "sql-file")))
-      (is (=  (core/get-schema-version conn "test"))))))
+  (testing "The failed script is recorded as started but not completed"
+    (let [row (first (filter #(= "test-2" (:schema_id %))
+                             (core/installed-schemas test-db)))]
+      (is (= "run" (:how row)))
+      (is (some? (:started_on row)))
+      (is (nil? (:completed_on row)))
+      (is (= 1 (core/get-schema-version test-db "test")))))
+
+  (testing "Opening the database again reports the incomplete install"
+    (is (thrown-with-msg? Exception #"Schema installation did not complete: test-2"
+                          (open-test-db ["test" 1])))))
 
 ;;; Schema replacement (-- sql-file: replaces <schema> <version>)
 
@@ -139,7 +146,10 @@
   (jdbc/with-db-connection [conn (open-test-db ["successor" 1])]
     (testing "the replacing schema is recorded without running its script"
       (is (= 1 (core/get-schema-version conn "successor")))
-      (is (= 1 (core/get-schema-version conn "legacy"))))
+      (is (= 1 (core/get-schema-version conn "legacy")))
+      (let [row (first (filter #(= "successor-0" (:schema_id %)) (core/installed-schemas conn)))]
+        (is (= "recorded" (:how row)))
+        (is (= "legacy-1" (:replaces row)))))
 
     (testing "later versions of the replacing schema run normally"
       (is (table-exists? conn "successor_c")))))
@@ -180,3 +190,74 @@
 (deftest misspelled-directive
   (is (some #(re-find #"Unrecognized sql-file directive: -- sql-file: replace legacy 1" %)
             (thrown-messages #(open-test-db ["typo" 0])))))
+
+(deftest replaced-schemas-are-all-checked-first
+  (open-test-db ["legacy" 0])
+  (open-test-db ["other" 1])
+  (is (some #(re-find #"replaces \[\"other\" 0\], but the database has other at version 1" %)
+            (thrown-messages #(open-test-db ["merged" 0]))))
+  (testing "no replaced schema was upgraded before the failure"
+    (jdbc/with-db-connection [conn (open-test-db ["other" 1])]
+      (is (= 0 (core/get-schema-version conn "legacy"))))))
+
+;;; Install tracking (sql_file_installed)
+
+(defn- installed-row [conn schema-id]
+  (first (filter #(= schema-id (:schema_id %)) (core/installed-schemas conn))))
+
+(deftest install-tracking-on-new-database
+  (jdbc/with-db-connection [conn (open-test-db ["test" 1])]
+    (testing "every installed version has a row, with its implicit dependency"
+      (is (= ["sql-file-0" "sql-file-1" "test-0" "test-1"]
+             (map :schema_id (core/installed-schemas conn))))
+      (is (nil? (:requires (installed-row conn "test-0"))))
+      (is (= "test-0" (:requires (installed-row conn "test-1")))))
+
+    (testing "run scripts have start and end times"
+      (let [row (installed-row conn "test-1")]
+        (is (= "run" (:how row)))
+        (is (some? (:started_on row)))
+        (is (some? (:completed_on row)))
+        (is (not (.after (:started_on row) (:completed_on row))))))
+
+    (testing "the older sql_file_schema table is kept up to date"
+      (is (= 1 (query-scalar conn ["SELECT schema_version FROM sql_file_schema WHERE schema_name = 'test'"])))
+      (is (= 0 (query-scalar conn ["SELECT schema_version FROM sql_file_schema WHERE schema_name = 'sql-file'"]))))))
+
+(defn- create-old-sql-file-database []
+  ;; What a database created by sql-file 0.5 and earlier looks like: sql_file_schema
+  ;; only, with the test schema at version 1.
+  (jdbc/with-db-connection [conn test-db]
+    (doseq [script ["schema-sql-file-0.sql" "schema-test-0.sql" "schema-test-1.sql"]]
+      (core/do-statements conn (sql-file.script/sql-statements
+                                (slurp (clojure.java.io/resource script)))))
+    (jdbc/insert! conn :sql_file_schema {:schema_name "sql-file" :schema_version 0})
+    (jdbc/insert! conn :sql_file_schema {:schema_name "test" :schema_version 1})))
+
+(deftest migration-from-old-sql-file-database
+  (create-old-sql-file-database)
+  ;; schema-test-0 and -1 would fail if run again (their tables exist).
+  (jdbc/with-db-connection [conn (open-test-db ["test" 1])]
+    (testing "existing versions are migrated, not run"
+      (is (= 1 (core/get-schema-version conn "test")))
+      (is (= {"sql-file-0" "migrated" "sql-file-1" "run" "test-0" "migrated" "test-1" "migrated"}
+             (into {} (map (juxt :schema_id :how) (core/installed-schemas conn)))))
+      (is (= "test-0" (:requires (installed-row conn "test-1"))))
+      (is (nil? (:started_on (installed-row conn "test-1")))))
+
+    (testing "migration is repeated if it was interrupted"
+      (jdbc/delete! conn :sql_file_installed ["schema_id IN ('sql-file-1', 'test-1')"])
+      (jdbc/with-db-connection [conn (open-test-db ["test" 1])]
+        (is (some? (installed-row conn "sql-file-1")))
+        (is (= "migrated" (:how (installed-row conn "test-1"))))))))
+
+(deftest set-schema-version-records-and-removes-versions
+  (jdbc/with-db-connection [conn (open-test-db ["test" 0])]
+    (core/set-schema-version! conn "ssv" 2)
+    (is (= ["ssv-0" "ssv-1" "ssv-2"]
+           (filter #(.startsWith ^String % "ssv") (map :schema_id (core/installed-schemas conn)))))
+    (is (= "recorded" (:how (installed-row conn "ssv-1"))))
+    (core/set-schema-version! conn "ssv" 0)
+    (is (= ["ssv-0"]
+           (filter #(.startsWith ^String % "ssv") (map :schema_id (core/installed-schemas conn)))))
+    (is (= 0 (query-scalar conn ["SELECT schema_version FROM sql_file_schema WHERE schema_name = 'ssv'"])))))

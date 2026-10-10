@@ -98,32 +98,117 @@ silently ignored."
           {:replaces []}
           (leading-comment-lines script-text)))
 
+;;; Install tracking
+;;;
+;;; sql-file records each installed schema script as a row in
+;;; sql_file_installed, keyed by schema id. A numbered ("legacy")
+;;; schema [name n] has the id "name-n", and implicitly requires
+;;; "name-(n-1)".
+;;;
+;;; how is 'run' (the script was executed), 'recorded' (recorded under
+;;; a replaces directive, or by set-schema-version!, without running),
+;;; or 'migrated' (carried over from the older sql_file_schema table).
+;;; A 'run' row is written before its script starts, and completed_on
+;;; set when it finishes, so a script that failed or was interrupted
+;;; partway through can be detected later.
+;;;
+;;; The older sql_file_schema table (one row per numbered schema, with
+;;; its version) is still kept up to date, so that an application can
+;;; be rolled back to an older sql-file without re-running scripts.
+
+(defn- now []
+  (java.sql.Timestamp. (System/currentTimeMillis)))
+
+(defn- table-exists? [conn table-name]
+  (pos? (query-scalar conn [(str "SELECT COUNT(*) FROM information_schema.tables"
+                                 " WHERE table_name = ?")
+                            (.toUpperCase ^String table-name)])))
+
+(defn legacy-schema-id [schema-name schema-version]
+  "The schema id of version schema-version of the numbered schema
+schema-name."
+  (str schema-name "-" schema-version))
+
+(defn- legacy-schema-version [schema-name schema-id]
+  "If schema-id is a version of the numbered schema schema-name, return
+the version number, otherwise nil."
+  (when-let [[_ version] (re-matches (re-pattern (str (java.util.regex.Pattern/quote schema-name)
+                                                      "-(\\d+)"))
+                                     schema-id)]
+    (Integer/parseInt version)))
+
+(defn- legacy-requires [schema-name schema-version]
+  (when (pos? schema-version)
+    (legacy-schema-id schema-name (dec schema-version))))
+
+(defn- all-schema-ids [conn]
+  (query-column conn ["SELECT schema_id FROM sql_file_installed"]))
+
+(defn- completed-schema-ids [conn]
+  (query-column conn [(str "SELECT schema_id FROM sql_file_installed"
+                           " WHERE NOT (how = 'run' AND completed_on IS NULL)")]))
+
+(defn installed-schemas [conn]
+  "Return the rows of sql_file_installed: one map per installed schema,
+with :schema_id, :how, :requires, :replaces, :digest, :started_on and
+:completed_on."
+  (query-all conn ["SELECT * FROM sql_file_installed ORDER BY schema_id"]))
+
+(defn- insert-installed! [conn row]
+  (jdbc/insert! conn :sql_file_installed row))
+
+(defn- mirror-legacy-version! [conn schema-name schema-version]
+  "Keep the older sql_file_schema table in step, for rollback to an
+older sql-file. sql-file's own schema stays at version 0 there, which
+is all an older sql-file knows how to handle."
+  (when (and (not= schema-name "sql-file")
+             (table-exists? conn "sql_file_schema"))
+    (if (some? (query-scalar conn ["SELECT schema_version FROM sql_file_schema WHERE schema_name = ?"
+                                   schema-name]))
+      (jdbc/update! conn :sql_file_schema
+                    {:schema_version schema-version}
+                    ["schema_name = ?" schema-name])
+      (jdbc/insert! conn :sql_file_schema
+                    {:schema_name schema-name
+                     :schema_version schema-version}))))
+
 (defn get-schema-version [conn schema-name]
-  "Retrieves the current version of a schema within a database managed
-by sql-file. If there is no such schema, this function returns nil. If
-the version cannot be identified due to an exception an error message
-is logged with the stack trace and the function returns nil."
+  "Retrieves the current version of a numbered schema within a database
+managed by sql-file: the highest version recorded as installed. If
+there is no such schema, this function returns nil. If the version
+cannot be identified due to an exception an error message is logged
+with the stack trace and the function returns nil."
   (try
-    (query-scalar conn [(str "SELECT schema_version"
-                             "  FROM sql_file_schema"
-                             " WHERE schema_name=?")
-                        schema-name])
+    (let [versions (keep #(legacy-schema-version schema-name %)
+                         (completed-schema-ids conn))]
+      (when (seq versions)
+        (apply max versions)))
     (catch Exception ex
       (when (log/enabled? :debug)
         (log/error ex "Error while attempting to identify version of schema:" schema-name))
       nil)))
 
 (defn set-schema-version! [conn schema-name req-schema-version]
-  "Sets the version of a schema within a database managed by
-sql-file."
-  (if-let [cur-schema-version (get-schema-version conn schema-name)]
-    (when (not= cur-schema-version req-schema-version)
-      (jdbc/update! conn :sql_file_schema
-                    {:schema_version req-schema-version}
-                    ["schema_name=?" schema-name]))
-    (jdbc/insert! conn :sql_file_schema
-                  {:schema_name schema-name
-                   :schema_version req-schema-version})))
+  "Sets the version of a numbered schema within a database managed by
+sql-file, without running any scripts: versions up to and including
+req-schema-version are recorded as installed, and any later versions
+are removed."
+  (let [ids (all-schema-ids conn)
+        installed (set ids)
+        timestamp (now)]
+    (doseq [id ids]
+      (when-let [version (legacy-schema-version schema-name id)]
+        (when (> version req-schema-version)
+          (jdbc/delete! conn :sql_file_installed ["schema_id = ?" id]))))
+    (doseq [version (range (inc req-schema-version))]
+      (let [id (legacy-schema-id schema-name version)]
+        (when-not (installed id)
+          (insert-installed! conn {:schema_id id
+                                   :how "recorded"
+                                   :requires (legacy-requires schema-name version)
+                                   :started_on timestamp
+                                   :completed_on timestamp}))))
+    (mirror-legacy-version! conn schema-name req-schema-version)))
 
 (declare ensure-schema)
 
@@ -133,44 +218,125 @@ they're already present in the database. Returns true if all of them
 are present (after bringing any older versions up to the declared
 version), false if none are, and throws if only some are, or if any
 is present at a later version than declared. (A later version has
-changes the replacing script doesn't reproduce.)"
-  (let [present (filter #(get-schema-version conn (first %)) replaces)]
+changes the replacing script doesn't reproduce.) All of the checks are
+made before any replaced schema is brought up to date."
+  (let [current (map (fn [[old-name old-version]]
+                       [old-name old-version (get-schema-version conn old-name)])
+                     replaces)
+        present (filter #(some? (nth % 2)) current)]
     (cond
       (empty? present)
       false
 
       (not= (count present) (count replaces))
       (throw (Exception. (str "Schema " schema " replaces " (vec replaces)
-                              ", but only " (vec present) " are present in the database.")))
+                              ", but only " (vec (map #(vec (take 2 %)) present))
+                              " are present in the database.")))
 
       :else
       (do
-        (doseq [[old-name old-version] replaces]
-          (let [cur-version (get-schema-version conn old-name)]
-            (when (> cur-version old-version)
-              (throw (Exception. (str "Schema " schema " replaces " [old-name old-version]
-                                      ", but the database has " old-name " at version " cur-version "."))))
-            (ensure-schema conn [old-name old-version])))
+        (doseq [[old-name old-version cur-version] current]
+          (when (> cur-version old-version)
+            (throw (Exception. (str "Schema " schema " replaces " [old-name old-version]
+                                    ", but the database has " old-name " at version " cur-version ".")))))
+        (doseq [replaced replaces]
+          (ensure-schema conn replaced))
         true))))
 
 (defn- install-schema [conn schema]
   "Locate and run the script necessary to install the specified
 schema in the target database instance. If the script declares that it
 replaces schemas already present in the database, the script is not
-run and the schema version is just recorded."
+run and the schema is just recorded as installed."
   (log/info "Installing schema:" schema)
-  (let [[schema-name schema-version] schema]
+  (let [[schema-name schema-version] schema
+        schema-id (legacy-schema-id schema-name schema-version)
+        requires (legacy-requires schema-name schema-version)]
     (try
       (let [script-url (locate-schema-script conn schema-name schema-version)
             script-text (slurp script-url)
             replaces (:replaces (script-directives script-text))]
         (if (replaced-schemas-present conn schema replaces)
-          (log/info "Schema" schema "replaces" replaces
-                    "which are already present. Recording it without running" (str script-url))
-          (run-script conn script-url script-text)))
+          (let [timestamp (now)]
+            (log/info "Schema" schema "replaces" replaces
+                      "which are already present. Recording it without running" (str script-url))
+            (insert-installed! conn {:schema_id schema-id
+                                     :how "recorded"
+                                     :requires requires
+                                     :replaces (clojure.string/join "\n" (map #(apply legacy-schema-id %) replaces))
+                                     :started_on timestamp
+                                     :completed_on timestamp}))
+          (do
+            (insert-installed! conn {:schema_id schema-id
+                                     :how "run"
+                                     :requires requires
+                                     :replaces (when (seq replaces)
+                                                 (clojure.string/join "\n" (map #(apply legacy-schema-id %) replaces)))
+                                     :started_on (now)})
+            (run-script conn script-url script-text)
+            (jdbc/update! conn :sql_file_installed
+                          {:completed_on (now)}
+                          ["schema_id = ?" schema-id]))))
       (catch Exception ex
         (throw (Exception. (str "Error installing schema: " schema) ex))))
-    (set-schema-version! conn schema-name schema-version)))
+    (mirror-legacy-version! conn schema-name schema-version)))
+
+;;; sql-file's own tables
+
+(defn- run-internal-script [conn version]
+  (let [script-url (clojure.java.io/resource (format "schema-sql-file-%s.sql" version))]
+    (run-script conn script-url (slurp script-url))))
+
+(defn- migrate-legacy-schema-rows! [conn]
+  "Copy the older sql_file_schema table into sql_file_installed: a row
+(name, n) becomes rows name-0 through name-n. Rows already present are
+left alone, so this can safely be repeated."
+  (let [installed (set (all-schema-ids conn))]
+    (doseq [{schema-name :schema_name
+             schema-version :schema_version} (query-all conn ["SELECT * FROM sql_file_schema"])]
+      (log/info "Migrating installed schema records:" schema-name "versions 0 to" schema-version)
+      (doseq [version (range (inc schema-version))]
+        (let [id (legacy-schema-id schema-name version)]
+          (when-not (installed id)
+            (insert-installed! conn {:schema_id id
+                                     :how "migrated"
+                                     :requires (legacy-requires schema-name version)})))))))
+
+(defn- ensure-sql-file-tables [conn]
+  "Install or upgrade sql-file's own tables. A database from an older
+sql-file has only sql_file_schema; its rows are copied into
+sql_file_installed. The sql-file-1 row is written last, so if this is
+interrupted it's simply repeated on the next open."
+  (when-not (table-exists? conn "sql_file_schema")
+    (log/info "Installing schema: [sql-file 0]")
+    (run-internal-script conn 0)
+    (jdbc/insert! conn :sql_file_schema {:schema_name "sql-file"
+                                         :schema_version 0}))
+  (when-not (and (table-exists? conn "sql_file_installed")
+                 (some #{"sql-file-1"} (all-schema-ids conn)))
+    (let [started-on (now)]
+      (when-not (table-exists? conn "sql_file_installed")
+        (log/info "Installing schema: [sql-file 1]")
+        (run-internal-script conn 1))
+      (migrate-legacy-schema-rows! conn)
+      (insert-installed! conn {:schema_id "sql-file-1"
+                               :how "run"
+                               :requires "sql-file-0"
+                               :started_on started-on
+                               :completed_on (now)}))))
+
+(defn- check-incomplete-installs [conn]
+  "Fail if any schema script started but didn't finish. The database
+may have been partly changed by it, and running it again could fail
+or do damage."
+  (when-let [incomplete (seq (query-all conn [(str "SELECT schema_id, started_on FROM sql_file_installed"
+                                                   " WHERE how = 'run' AND completed_on IS NULL"
+                                                   " ORDER BY started_on")]))]
+    (throw (Exception. (str "Schema installation did not complete: "
+                            (clojure.string/join ", " (map #(str (:schema_id %) " (started " (:started_on %) ")")
+                                                           incomplete))
+                            ". The database may have been partly changed. Restore it from a backup,"
+                            " or repair it by hand and delete the schema's row from sql_file_installed.")))))
 
 ;; Public Entry points
 
@@ -218,8 +384,9 @@ schema in the target database instance."
 
 (defn open-local [desc]
   (log/info "Opening sql-file:" desc)
-  (let [conn (-> (hsqldb-conn desc)
-                 (ensure-schema ["sql-file" 0]))]
+  (let [conn (hsqldb-conn desc)]
+    (ensure-sql-file-tables conn)
+    (check-incomplete-installs conn)
     (doseq [schema (get desc :schemas [])]
       (ensure-schema conn schema))
     conn))
