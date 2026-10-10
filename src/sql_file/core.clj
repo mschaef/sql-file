@@ -241,6 +241,31 @@ are removed."
                                    :completed_on timestamp}))))
     (mirror-legacy-version! conn schema-name req-schema-version)))
 
+;;; Script digests
+;;;
+;;; A schema script's digest covers what it means: its effective
+;;; requires (for a numbered script, including the implicit previous
+;;; version), its replaces, and its statements as sql-statements splits
+;;; them. sql-statements collapses runs of whitespace and drops --
+;;; comments, so reformatting or re-commenting a script doesn't change
+;;; its digest; changing a statement, a dependency or a replacement
+;;; does. Each element is encoded as a one-byte tag, its length in
+;;; UTF-8 bytes (four bytes, big-endian), and its bytes, so no two
+;;; different scripts encode the same way.
+
+(defn- digest-of [requires replaces statements]
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")
+        add (fn [tag ^String value]
+              (let [bytes (.getBytes value "UTF-8")
+                    n (alength bytes)]
+                (.update md (byte (int tag)))
+                (.update md (byte-array (map #(unchecked-byte (bit-shift-right n %)) [24 16 8 0])))
+                (.update md bytes)))]
+    (doseq [id requires] (add \R id))
+    (doseq [id replaces] (add \P id))
+    (doseq [stmt statements] (add \S stmt))
+    (apply str (map #(format "%02x" %) (.digest md)))))
+
 ;;; Schema scripts and the dependency graph
 
 (defn- split-ids [s]
@@ -263,12 +288,14 @@ script, the previous version first, then any declared), :replaces, and
         text (slurp url)
         {:keys [requires replaces]} (script-directives text)
         implicit (when legacy (apply legacy-requires legacy))]
-    {:id schema-id
-     :url url
-     :text text
-     :requires (vec (distinct (concat (when implicit [implicit]) requires)))
-     :replaces replaces
-     :legacy legacy}))
+    (let [requires (vec (distinct (concat (when implicit [implicit]) requires)))]
+      {:id schema-id
+       :url url
+       :text text
+       :requires requires
+       :replaces replaces
+       :legacy legacy
+       :digest (digest-of requires replaces (map :statement (script/sql-statements text)))})))
 
 (defn- installed-graph [conn]
   "The installed schemas, as a map from id to {:requires [...]
@@ -398,7 +425,7 @@ anything is installed."
 installed. If the script declares that it replaces schemas already
 present in the database, the script is not run and the schema is just
 recorded as installed."
-  (let [{:keys [id url text requires replaces legacy]} script]
+  (let [{:keys [id url text requires replaces legacy digest]} script]
     (log/info "Installing schema:" id)
     (try
       (if (replaced-schemas-present conn script)
@@ -409,6 +436,7 @@ recorded as installed."
                                    :how "recorded"
                                    :requires (join-ids requires)
                                    :replaces (join-ids replaces)
+                                   :digest digest
                                    :started_on timestamp
                                    :completed_on timestamp}))
         (do
@@ -416,6 +444,7 @@ recorded as installed."
                                    :how "run"
                                    :requires (join-ids requires)
                                    :replaces (join-ids replaces)
+                                   :digest digest
                                    :started_on (now)})
           (run-script conn url text)
           (jdbc/update! conn :sql_file_installed
@@ -457,6 +486,48 @@ database. sql-file's own schemas don't count."
   "How to handle a condition that's an error in production and a
 warning in development: :error or :warn."
   (get desc option (if (:development-mode desc) :warn :error)))
+
+(defn script-digest [conn schema-id]
+  "The digest of the current script for schema-id: what sql-file would
+record if it were installed now, and compares against what was
+recorded when it was."
+  (:digest (read-script conn schema-id)))
+
+(defn- script-not-found? [ex]
+  (some #(re-find #"^Cannot find schema script" (or (.getMessage ^Throwable %) ""))
+        (take-while some? (iterate #(.getCause ^Throwable %) ex))))
+
+(defn- check-schema-digests [conn desc]
+  "Compare each installed schema's recorded digest with its script as
+it is now. A difference means the script was edited after it was
+installed. Schemas installed before digests were recorded get one now.
+Scripts that no longer exist are skipped, as are sql-file's own."
+  (let [changed (atom [])]
+    (doseq [{:keys [schema_id digest]} (installed-schemas conn)
+            :when (not (.startsWith ^String schema_id "sql-file-"))]
+      (try
+        (let [script (read-script conn schema_id)]
+          (cond
+            (nil? digest)
+            (do
+              (log/info "Recording digest for installed schema:" schema_id)
+              (jdbc/update! conn :sql_file_installed
+                            {:digest (:digest script)}
+                            ["schema_id = ?" schema_id]))
+
+            (not= digest (:digest script))
+            (swap! changed conj (str schema_id " (" (:url script) ")"))))
+        (catch Exception ex
+          (when-not (script-not-found? ex)
+            (swap! changed conj (str schema_id " (can't be read: " (.getMessage ex) ")"))))))
+    (when (seq @changed)
+      (let [message (str "Installed schema scripts have changed since they were installed: "
+                         (clojure.string/join ", " @changed)
+                         ". Edits to an installed script don't reach databases that already have it;"
+                         " make the change in a new script instead.")]
+        (if (= :warn (policy desc :on-schema-change))
+          (log/warn message)
+          (throw (Exception. message)))))))
 
 (defn- check-uncovered-schemas [conn desc targets]
   (when-let [uncovered (seq (uncovered-schemas conn targets))]
@@ -572,11 +643,15 @@ numbered schemas), along with everything they require. Options:
   :development-mode - when true, conditions that are errors in
      production are warnings instead
   :on-uncovered-schema - :error or :warn, for installed schemas the
-     requested schemas don't cover (default from :development-mode)"
+     requested schemas don't cover (default from :development-mode)
+  :on-schema-change - :error or :warn, for installed schema scripts
+     that have changed since they were installed (default from
+     :development-mode)"
   (log/info "Opening sql-file:" desc)
   (let [conn (hsqldb-conn desc)]
     (ensure-sql-file-tables conn)
     (check-incomplete-installs conn)
+    (check-schema-digests conn desc)
     (let [targets (get desc :schemas [])]
       (check-uncovered-schemas conn desc targets)
       (install-targets conn targets))

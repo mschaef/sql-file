@@ -381,3 +381,92 @@ schemas the request doesn't cover are only a warning here."
     (is (thrown? Exception
                  (core/open-local {:name test-db-name :schemas ["graph/left"]
                                    :development-mode true :on-uncovered-schema :error})))))
+
+;;; Script digests
+
+(def ^:private digest-of #'core/digest-of)
+
+(defn- statement-texts [text]
+  (map :statement (sql-file.script/sql-statements text)))
+
+(deftest digest-covers-meaning-not-formatting
+  (let [base (digest-of ["a"] ["b"] (statement-texts "CREATE TABLE x (y INT);\nINSERT INTO x VALUES(1);"))]
+    (testing "comments, blank lines and whitespace runs don't matter"
+      (is (= base (digest-of ["a"] ["b"]
+                             (statement-texts (str "-- a comment\n\n"
+                                                   "CREATE   TABLE x\n  (y INT);  -- trailing\n\n"
+                                                   "INSERT INTO x\tVALUES(1);"))))))
+
+    (testing "statement text matters, including adding whitespace where there was none"
+      (is (not= base (digest-of ["a"] ["b"] (statement-texts "CREATE TABLE x (y BIGINT);\nINSERT INTO x VALUES(1);"))))
+      (is (not= base (digest-of ["a"] ["b"] (statement-texts "CREATE TABLE x (y INT);\nINSERT INTO x VALUES (1);")))))
+
+    (testing "requires and replaces matter, including their order"
+      (is (not= base (digest-of [] ["b"] (statement-texts "CREATE TABLE x (y INT);\nINSERT INTO x VALUES(1);"))))
+      (is (not= base (digest-of ["a" "c"] ["b"] (statement-texts "CREATE TABLE x (y INT);\nINSERT INTO x VALUES(1);"))))
+      (is (not= (digest-of ["a" "c"] [] [])
+                (digest-of ["c" "a"] [] [])))
+      (is (not= base (digest-of ["a"] [] (statement-texts "CREATE TABLE x (y INT);\nINSERT INTO x VALUES(1);")))))
+
+    (testing "elements can't run together"
+      (is (not= (digest-of ["ab"] [] []) (digest-of ["a" "b"] [] [])))
+      ;; Tags alone don't separate these: without the lengths, both
+      ;; would encode as "SaSb".
+      (is (not= (digest-of [] [] ["a" "b"]) (digest-of [] [] ["aSb"])))
+      (is (not= (digest-of ["a"] [] []) (digest-of [] ["a"] []))))))
+
+(deftest numbered-scripts-include-their-implicit-requires
+  (jdbc/with-db-connection [conn (open-test-db ["test" 1])]
+    (is (= (core/script-digest conn "test-1")
+           (digest-of ["test-0"] [] (statement-texts (slurp (clojure.java.io/resource "schema-test-1.sql"))))))))
+
+(deftest digests-are-recorded-at-install
+  (jdbc/with-db-connection [conn (open-test-db "graph/top")]
+    (is (= (core/script-digest conn "graph/top") (:digest (installed-row conn "graph/top"))))
+    (is (re-matches #"[0-9a-f]{64}" (:digest (installed-row conn "graph/base"))))))
+
+(deftest digests-are-recorded-for-replacing-scripts
+  (testing "scripts recorded under replaces get the replacing script's digest"
+    (open-test-db "graph/left")
+    (jdbc/with-db-connection [conn (open-test-db "renamed/left")]
+      (is (= "recorded" (:how (installed-row conn "renamed/left"))))
+      (is (= (core/script-digest conn "renamed/left") (:digest (installed-row conn "renamed/left")))))))
+
+(defn- simulate-edit! [schema-id]
+  ;; Editing a test resource isn't practical, so change the recorded
+  ;; digest instead: to sql-file, it looks the same.
+  (jdbc/update! test-db :sql_file_installed {:digest (apply str (repeat 64 "0"))}
+                ["schema_id = ?" schema-id]))
+
+(deftest changed-scripts-are-detected
+  (open-test-db-strictly "graph/top")
+  (simulate-edit! "graph/left")
+
+  (testing "an error by default, naming the script"
+    (is (thrown-with-msg? Exception #"Installed schema scripts have changed since they were installed: graph/left \(.*graph/left.sql\)"
+                          (open-test-db-strictly "graph/top"))))
+
+  (testing "a warning in development mode, or when asked"
+    (is (some? (core/open-local {:name test-db-name :schemas ["graph/top"] :development-mode true})))
+    (is (some? (core/open-local {:name test-db-name :schemas ["graph/top"] :on-schema-change :warn}))))
+
+  (testing "an explicit setting overrides development mode"
+    (is (thrown? Exception
+                 (core/open-local {:name test-db-name :schemas ["graph/top"]
+                                   :development-mode true :on-schema-change :error}))))
+
+  (testing "the recorded digest isn't overwritten by a warning"
+    (is (= (apply str (repeat 64 "0")) (:digest (installed-row test-db "graph/left"))))))
+
+(deftest digests-are-adopted-for-schemas-installed-without-one
+  (create-old-sql-file-database)
+  (jdbc/with-db-connection [conn (open-test-db-strictly ["test" 1])]
+    (is (= (core/script-digest conn "test-1") (:digest (installed-row conn "test-1"))))
+    (is (= (core/script-digest conn "test-0") (:digest (installed-row conn "test-0"))))
+    (is (= "migrated" (:how (installed-row conn "test-1"))))))
+
+(deftest scripts-that-no-longer-exist-are-skipped
+  (jdbc/with-db-connection [conn (open-test-db)]
+    (jdbc/insert! conn :sql_file_installed {:schema_id "ghost/a" :how "recorded"
+                                            :digest (apply str (repeat 64 "1"))}))
+  (is (some? (core/open-local {:name test-db-name :schemas ["graph/uses-ghost"]}))))

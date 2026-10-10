@@ -225,9 +225,9 @@ means:
 2. each `replaces`,
 3. each statement as `sql-statements` produces it, in order.
 
-Each element is written as a tag (`R`, `P`, or `S`), its length in
-UTF-8 bytes, and its bytes, so no two different scripts encode the
-same way.
+Each element is written as a one-byte tag (`R`, `P`, or `S`), its
+length in UTF-8 bytes (four bytes, big-endian), and its bytes, so no
+two different scripts encode the same way.
 
 Because `sql-statements` collapses whitespace runs to a single space,
 drops `--` comments, and keeps string literals exactly, the digest
@@ -247,6 +247,13 @@ can still be found, recompute and compare:
   at INFO. The first open after upgrading sql-file adopts whatever the
   scripts say at that point.
 * Script no longer found: skipped. Deleting retired scripts is fine.
+* Script found but unreadable (a bad directive, say): treated as a
+  change.
+* sql-file's own schemas (`sql-file-*`) aren't checked; they change
+  only with sql-file itself.
+* Checking happens on open, before anything new is installed. A
+  warning leaves the recorded digest as it was, so the difference is
+  reported again on the next open.
 
 ## Production and development behavior
 
@@ -311,7 +318,7 @@ separate steps of the work, each with tests in the existing style
 2. **Step 2: ids and the dependency graph.** (Done.) String ids, `requires`,
    resolution and topological install, legacy naming, `replaces` by
    id, the uncovered-schema check, `:development-mode`.
-3. **Step 3: digests.** Computation, storage, checking and adoption for
+3. **Step 3: digests.** (Done.) Computation, storage, checking and adoption for
    migrated rows.
 4. **Step 4: statement-level tracking and resume.**
 5. **Later (possibly 1.0.0):** remove legacy `[name n]` requests and
@@ -345,5 +352,5 @@ are detected.
   id, after a rename)? Current plan: no; require the new id.
 * Maximum id length (255) and allowed characters (no whitespace;
   anything else?).
-* Whether `recorded` rows should store the digest of the replacing
-  script (current plan: yes, so later edits to a baseline are noticed).
+* ~~Whether `recorded` rows should store the digest of the replacing
+  script.~~ Decided: yes, so later edits to a baseline are noticed.

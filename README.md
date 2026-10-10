@@ -170,6 +170,32 @@ automatically the first time they're opened. The older
 `sql_file_schema` table is still kept up to date for numbered schemas,
 so an application can be rolled back to an earlier `sql-file`.
 
+### Detecting Changed Scripts
+
+When a script is installed, `sql-file` records a digest (SHA-256) of
+what it means: its `requires` (for a numbered script, including the
+implicit previous version), its `replaces`, and its statements. Each
+time the database is opened, the digest of every installed script that
+still exists is compared with the script as it is now.
+
+Editing an installed script doesn't change databases that already have
+it, so a difference usually means a change that should have gone into a
+new script. It's an error by default, and a warning with
+`:development-mode true`. `:on-schema-change` (`:error` or `:warn`)
+overrides either.
+
+The digest covers statements as `sql-file` splits them: runs of
+whitespace are collapsed and `--` comments dropped, so re-indenting a
+statement, rewording a comment or adding blank lines doesn't count as a
+change. Changing a statement does, as does adding whitespace where
+there was none (`VALUES(1)` to `VALUES (1)`), and so does adding,
+removing or reordering `requires` or `replaces` directives.
+
+Scripts installed before `sql-file` recorded digests get one, from the
+script as it is then, the first time the database is opened. Scripts
+that no longer exist aren't checked. `script-digest` returns the
+digest of a script as it is now.
+
 ### Schemas Not Covered by the Request
 
 When opening a database, installed schemas that the requested schemas
