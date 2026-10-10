@@ -470,3 +470,185 @@ schemas the request doesn't cover are only a warning here."
     (jdbc/insert! conn :sql_file_installed {:schema_id "ghost/a" :how "recorded"
                                             :digest (apply str (repeat 64 "1"))}))
   (is (some? (core/open-local {:name test-db-name :schemas ["graph/uses-ghost"]}))))
+
+;;; Statement tracking and resuming
+
+(def ^:dynamic *script-dir* nil)
+
+(defn- with-script-dir
+  "Run tests with a temporary directory on the classpath, so they can
+write and edit schema scripts between opens."
+  [t]
+  (let [dir (.toFile (java.nio.file.Files/createTempDirectory
+                      "sql-file-test" (make-array java.nio.file.attribute.FileAttribute 0)))
+        thread (Thread/currentThread)
+        loader (.getContextClassLoader thread)]
+    (.setContextClassLoader thread (java.net.URLClassLoader. (into-array [(.toURL (.toURI dir))]) loader))
+    (try
+      (binding [*script-dir* dir]
+        (t))
+      (finally
+        (.setContextClassLoader thread loader)))))
+
+(defn- write-script! [schema-id & lines]
+  (let [f (clojure.java.io/file *script-dir* (str schema-id ".sql"))]
+    (clojure.java.io/make-parents f)
+    (spit f (clojure.string/join "\n" lines))))
+
+(defn- open-tracked [& schemas]
+  (core/open-local {:name test-db-name :schemas (vec schemas) :track-statements true}))
+
+(defn- statement-ordinals [conn schema-id]
+  (map :ordinal (core/installed-statements conn schema-id)))
+
+(defn- write-failing-script! []
+  (write-script! "work/s"
+                 "CREATE CACHED TABLE r1 (x INT NOT NULL);"
+                 "CREATE CACHED TABLE r2 (x INT NOT NULL);"
+                 "CREATE CACHED TABLE r3 (x INT NOT NULL"))
+
+(defn- write-fixed-script! []
+  (write-script! "work/s"
+                 "-- Fixed: closing parenthesis on r3."
+                 "CREATE CACHED TABLE r1 (x INT NOT NULL);"
+                 "CREATE CACHED TABLE r2 (x INT NOT NULL);"
+                 "CREATE CACHED TABLE r3 (x INT NOT NULL);"))
+
+(deftest tracked-installs-record-each-statement
+  (jdbc/with-db-connection [conn (open-tracked "graph/top")]
+    (is (= [1 2] (statement-ordinals conn "graph/base")))
+    (is (= [1] (statement-ordinals conn "graph/top")))
+    (is (true? (:statements_tracked (installed-row conn "graph/top"))))
+    (is (re-matches #"[0-9a-f]{64}" (:digest (first (core/installed-statements conn "graph/base")))))))
+
+(deftest statements-are-not-tracked-by-default
+  (jdbc/with-db-connection [conn (open-test-db "graph/top")]
+    (is (empty? (core/installed-statements conn "graph/base")))
+    (is (false? (:statements_tracked (installed-row conn "graph/base"))))))
+
+(deftest development-mode-tracks-statements
+  (jdbc/with-db-connection [conn (core/open-local {:name test-db-name :schemas ["graph/top"]
+                                                   :development-mode true})]
+    (is (= [1 2] (statement-ordinals conn "graph/base")))))
+
+(deftest a-fixed-script-resumes-where-it-failed
+  (with-script-dir
+    (fn []
+      (write-failing-script!)
+      (is (thrown? Exception (open-tracked "work/s")))
+
+      (testing "the statements that succeeded are recorded"
+        (is (= [1 2] (statement-ordinals test-db "work/s")))
+        (is (nil? (:completed_on (installed-row test-db "work/s")))))
+
+      (testing "trying again unfixed fails at the same statement"
+        (is (thrown? Exception (open-tracked "work/s")))
+        (is (= [1 2] (statement-ordinals test-db "work/s"))))
+
+      (testing "once fixed, the install resumes at the failed statement"
+        ;; r1 and r2 already exist, so re-running them would fail.
+        (write-fixed-script!)
+        (jdbc/with-db-connection [conn (open-tracked "work/s")]
+          (is (= 1 (query-scalar conn ["SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'R3'"])))
+          (is (= [1 2 3] (statement-ordinals conn "work/s")))
+          (let [row (installed-row conn "work/s")]
+            (is (some? (:completed_on row)))
+            (is (= (core/script-digest conn "work/s") (:digest row))))))
+
+      (testing "the completed install then opens normally"
+        (is (some? (open-test-db-strictly "work/s")))))))
+
+(deftest resuming-needs-statement-tracking
+  (with-script-dir
+    (fn []
+      (write-failing-script!)
+      (is (thrown? Exception (open-tracked "work/s")))
+      (write-fixed-script!)
+      (is (thrown-with-msg? Exception #"did not complete: work/s.*can be resumed with :track-statements"
+                            (open-test-db "work/s"))))))
+
+(deftest untracked-installs-cannot-be-resumed
+  (with-script-dir
+    (fn []
+      (write-failing-script!)
+      (is (thrown? Exception (open-test-db "work/s")))
+      (write-fixed-script!)
+      (let [messages (thrown-messages #(open-tracked "work/s"))]
+        (is (some #(re-find #"did not complete: work/s" %) messages))
+        (is (not-any? #(re-find #"can be resumed" %) messages))))))
+
+(deftest editing-an-applied-statement-is-reported
+  (with-script-dir
+    (fn []
+      (write-failing-script!)
+      (is (thrown? Exception (open-tracked "work/s")))
+      (write-script! "work/s"
+                     "CREATE CACHED TABLE r1 (x BIGINT NOT NULL);"
+                     "CREATE CACHED TABLE r2 (x INT NOT NULL);"
+                     "CREATE CACHED TABLE r3 (x INT NOT NULL);")
+      (is (some #(re-find #"Statement 1 of work/s changed after it was applied" %)
+                (thrown-messages #(open-tracked "work/s")))))))
+
+(deftest reformatting-an-applied-statement-is-not-a-change
+  (with-script-dir
+    (fn []
+      (write-failing-script!)
+      (is (thrown? Exception (open-tracked "work/s")))
+      (write-script! "work/s"
+                     "CREATE CACHED TABLE r1 (x INT   NOT NULL);  -- comment"
+                     ""
+                     "CREATE CACHED TABLE r2"
+                     "  (x INT NOT NULL);"
+                     "CREATE CACHED TABLE r3 (x INT NOT NULL);")
+      (is (some? (open-tracked "work/s"))))))
+
+(deftest removing-an-applied-statement-is-reported
+  (with-script-dir
+    (fn []
+      (write-failing-script!)
+      (is (thrown? Exception (open-tracked "work/s")))
+      (write-script! "work/s" "CREATE CACHED TABLE r1 (x INT NOT NULL);")
+      (is (some #(re-find #"Statement 2 of work/s was applied, but the script now has only 1 statements" %)
+                (thrown-messages #(open-tracked "work/s")))))))
+
+(deftest a-script-failing-on-its-first-statement-resumes-from-the-start
+  (with-script-dir
+    (fn []
+      (write-script! "work/s" "CREATE CACHED TABLE r1 (x INT NOT NULL")
+      (is (thrown? Exception (open-tracked "work/s")))
+      (is (empty? (statement-ordinals test-db "work/s")))
+      (write-script! "work/s" "CREATE CACHED TABLE r1 (x INT NOT NULL);")
+      (jdbc/with-db-connection [conn (open-tracked "work/s")]
+        (is (= [1] (statement-ordinals conn "work/s")))
+        (is (some? (:completed_on (installed-row conn "work/s"))))))))
+
+(deftest a-resumed-script-can-gain-requires
+  (with-script-dir
+    (fn []
+      (write-failing-script!)
+      (is (thrown? Exception (open-tracked "work/s")))
+      (write-script! "work/s"
+                     "-- sql-file: requires graph/base"
+                     ""
+                     "CREATE CACHED TABLE r1 (x INT NOT NULL);"
+                     "CREATE CACHED TABLE r2 (x INT NOT NULL);"
+                     "INSERT INTO install_log(schema_id) VALUES('work/s');")
+      (jdbc/with-db-connection [conn (open-tracked "work/s")]
+        (is (= ["graph/base" "work/s"] (install-log conn)))
+        (is (= "graph/base" (:requires (installed-row conn "work/s"))))))))
+
+(deftest unrequested-incomplete-installs-are-still-reported
+  (with-script-dir
+    (fn []
+      (write-failing-script!)
+      (is (thrown? Exception (open-tracked "work/s")))
+      (is (thrown-with-msg? Exception #"did not complete: work/s"
+                            (core/open-local {:name test-db-name :schemas ["graph/base"]
+                                              :track-statements true
+                                              :on-uncovered-schema :warn}))))))
+
+(deftest snapshot-databases-gain-the-statements-tracked-column
+  (jdbc/with-db-connection [conn (open-test-db "graph/base")]
+    (jdbc/db-do-prepared conn "ALTER TABLE sql_file_installed DROP COLUMN statements_tracked"))
+  (jdbc/with-db-connection [conn (open-test-db "graph/base")]
+    (is (false? (:statements_tracked (installed-row conn "graph/base"))))))

@@ -170,6 +170,32 @@ automatically the first time they're opened. The older
 `sql_file_schema` table is still kept up to date for numbered schemas,
 so an application can be rolled back to an earlier `sql-file`.
 
+### Resuming a Failed Script (Development)
+
+With `:track-statements true` (the default when `:development-mode` is
+true), `sql-file` also records each statement of a script as it
+succeeds, in `sql_file_statement`. HSQLDB applies schema changes
+immediately, so these records match what's in the database.
+
+If a script then fails partway through, fix it and open the database
+again. `sql-file` checks that the statements already applied are
+unchanged (reformatting and comments don't count), skips them, and runs
+the rest. The script's record is updated to match the fixed script.
+`installed-statements` returns the statements recorded for a schema.
+
+* Changing a statement that was already applied is an error: schema
+  changes can't be undone, so restore the database, or make the
+  statement match what was applied. Removing one is too.
+* An install that ran without statement tracking can't be resumed,
+  because there's no record of which statements were applied. It's
+  reported as incomplete, as described above.
+* Without statement tracking, an install that was tracked is still
+  reported as incomplete, with a note that it can be resumed with
+  `:track-statements` or `:development-mode`.
+
+Statement records are kept after the script completes, as a record of
+what ran and when.
+
 ### Detecting Changed Scripts
 
 When a script is installed, `sql-file` records a digest (SHA-256) of

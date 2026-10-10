@@ -69,12 +69,24 @@ for a numbered script. Throws if there's no such script."
         (catch Exception ex
           (throw (Exception. (str "Error running statement: " stmt) ex)))))))
 
-(defn- run-script [conn script-url script-text]
+(defn- run-script
   "Run the database script with the given text (read from the given
-URL) against a specific database connection."
-  (log/info "Run DB script:" (str script-url))
-  (do-statements conn (map #(assoc % :url script-url)
-                           (script/sql-statements script-text))))
+URL) against a specific database connection. With on-statement, the
+statements are numbered from 1, those before first-ordinal are
+skipped, and (on-statement ordinal statement-text) is called after
+each one succeeds."
+  ([conn script-url script-text]
+   (log/info "Run DB script:" (str script-url))
+   (do-statements conn (map #(assoc % :url script-url)
+                            (script/sql-statements script-text))))
+
+  ([conn script-url script-text first-ordinal on-statement]
+   (log/info "Run DB script:" (str script-url)
+             (if (> first-ordinal 1) (str "from statement " first-ordinal) ""))
+   (doseq [[ordinal stmt] (map vector (iterate inc 1) (script/sql-statements script-text))
+           :when (>= ordinal first-ordinal)]
+     (do-statements conn [(assoc stmt :url script-url)])
+     (on-statement ordinal (:statement stmt)))))
 
 ;;; Script directives
 ;;;
@@ -316,9 +328,11 @@ script, the previous version first, then any declared), :replaces, and
 dependency order: a depth-first, post-order walk taking targets in the
 order given and each script's requires in the order declared.
 Installed schemas aren't read or followed: they, and what they
-required, are already present. Returns a sequence of scripts (see
-read-script)."
-  (let [installed (installed-graph conn)
+required, are already present. A schema whose install didn't finish
+(one being resumed) counts as not installed, so its script is read
+again, including any requires added while fixing it. Returns a
+sequence of scripts (see read-script)."
+  (let [installed (select-keys (installed-graph conn) (completed-schema-ids conn))
         order (atom [])
         done (atom #{})]
     (letfn [(visit [schema-id path]
@@ -420,6 +434,77 @@ anything is installed."
           (ensure-schema conn replaced-id))
         true))))
 
+;;; Statement tracking
+;;;
+;;; With statement tracking, each statement's row in sql_file_statement
+;;; is written after it succeeds. HSQLDB commits schema changes
+;;; immediately, so the rows match what's actually in the database. An
+;;; install that fails partway through can then be resumed after the
+;;; script is fixed: statements already applied are skipped, provided
+;;; they haven't changed, and the rest are run.
+
+(defn- track-statements? [conn]
+  (boolean (::track-statements conn)))
+
+(defn- statement-digest [statement-text]
+  (digest-of [] [] [statement-text]))
+
+(defn- record-statement! [conn schema-id ordinal statement-text]
+  (jdbc/insert! conn :sql_file_statement {:schema_id schema-id
+                                          :ordinal ordinal
+                                          :digest (statement-digest statement-text)
+                                          :completed_on (now)}))
+
+(defn installed-statements [conn schema-id]
+  "The statements of schema-id recorded as applied, when statement
+tracking was on: maps with :ordinal (from 1), :digest and
+:completed_on."
+  (query-all conn [(str "SELECT ordinal, digest, completed_on FROM sql_file_statement"
+                        " WHERE schema_id = ? ORDER BY ordinal")
+                   schema-id]))
+
+(defn- resume-point [conn script]
+  "For a tracked install that didn't finish, the ordinal of the first
+statement still to run. Statements already applied must be unchanged."
+  (let [{:keys [id text]} script
+        statements (vec (map :statement (script/sql-statements text)))
+        applied (installed-statements conn id)]
+    (doseq [{:keys [ordinal digest]} applied]
+      (when (> ordinal (count statements))
+        (throw (Exception. (str "Statement " ordinal " of " id " was applied, but the script now has only "
+                                (count statements) " statements. Restore the database, or put the"
+                                " statement back in the script."))))
+      (when (not= digest (statement-digest (nth statements (dec ordinal))))
+        (throw (Exception. (str "Statement " ordinal " of " id " changed after it was applied."
+                                " Schema changes can't be undone, so restore the database, or make the"
+                                " statement match what was applied.")))))
+    (inc (reduce max 0 (map :ordinal applied)))))
+
+(defn- incomplete-row [conn schema-id]
+  (query-first conn [(str "SELECT * FROM sql_file_installed"
+                          " WHERE schema_id = ? AND how = 'run' AND completed_on IS NULL")
+                     schema-id]))
+
+(defn- run-tracked [conn script first-ordinal]
+  (let [{:keys [id url text]} script]
+    (run-script conn url text first-ordinal
+                (fn [ordinal statement-text]
+                  (record-statement! conn id ordinal statement-text)))))
+
+(defn- resume-script [conn script]
+  "Finish a tracked install that failed partway through, with the
+script as it is now. The schema's row is updated to match the script."
+  (let [{:keys [id requires replaces digest]} script
+        first-ordinal (resume-point conn script)]
+    (log/info "Resuming installation of schema" id "at statement" first-ordinal)
+    (run-tracked conn script first-ordinal)
+    (jdbc/update! conn :sql_file_installed
+                  {:requires (join-ids requires)
+                   :replaces (join-ids replaces)
+                   :digest digest
+                   :completed_on (now)}
+                  ["schema_id = ?" id])))
+
 (defn- install-script [conn script]
   "Install a single schema script whose requirements are already
 installed. If the script declares that it replaces schemas already
@@ -428,7 +513,11 @@ recorded as installed."
   (let [{:keys [id url text requires replaces legacy digest]} script]
     (log/info "Installing schema:" id)
     (try
-      (if (replaced-schemas-present conn script)
+      (cond
+        (incomplete-row conn id)
+        (resume-script conn script)
+
+        (replaced-schemas-present conn script)
         (let [timestamp (now)]
           (log/info "Schema" id "replaces" (clojure.string/join ", " replaces)
                     "which are already present. Recording it without running" (str url))
@@ -439,14 +528,19 @@ recorded as installed."
                                    :digest digest
                                    :started_on timestamp
                                    :completed_on timestamp}))
+
+        :else
         (do
           (insert-installed! conn {:schema_id id
                                    :how "run"
                                    :requires (join-ids requires)
                                    :replaces (join-ids replaces)
                                    :digest digest
+                                   :statements_tracked (track-statements? conn)
                                    :started_on (now)})
-          (run-script conn url text)
+          (if (track-statements? conn)
+            (run-tracked conn script 1)
+            (run-script conn url text))
           (jdbc/update! conn :sql_file_installed
                         {:completed_on (now)}
                         ["schema_id = ?" id])))
@@ -459,7 +553,7 @@ recorded as installed."
   (doseq [script (install-order conn (map schema-target-id targets))]
     ;; Installing a replacing script can install other schemas first
     ;; (the ones it replaces), so check again.
-    (when-not (contains? (set (all-schema-ids conn)) (:id script))
+    (when-not (contains? (set (completed-schema-ids conn)) (:id script))
       (install-script conn script))))
 
 (defn- uncovered-schemas [conn targets]
@@ -503,8 +597,11 @@ it is now. A difference means the script was edited after it was
 installed. Schemas installed before digests were recorded get one now.
 Scripts that no longer exist are skipped, as are sql-file's own."
   (let [changed (atom [])]
-    (doseq [{:keys [schema_id digest]} (installed-schemas conn)
-            :when (not (.startsWith ^String schema_id "sql-file-"))]
+    (doseq [{:keys [schema_id digest how completed_on]} (installed-schemas conn)
+            :when (not (.startsWith ^String schema_id "sql-file-"))
+            ;; An install that didn't finish is resumed or reported
+            ;; separately; its script is expected to have changed.
+            :when (not (and (= how "run") (nil? completed_on)))]
       (try
         (let [script (read-script conn schema_id)]
           (cond
@@ -569,6 +666,15 @@ interrupted it's simply repeated on the next open."
     (run-internal-script conn 0)
     (jdbc/insert! conn :sql_file_schema {:schema_name "sql-file"
                                          :schema_version 0}))
+  (when (and (table-exists? conn "sql_file_installed")
+             (zero? (query-scalar conn [(str "SELECT COUNT(*) FROM information_schema.columns"
+                                             " WHERE table_name = 'SQL_FILE_INSTALLED'"
+                                             " AND column_name = 'STATEMENTS_TRACKED'")])))
+    ;; Databases opened with a 0.6.0 development snapshot, before this
+    ;; column was added to sql-file-1.
+    (jdbc/db-do-prepared conn (str "ALTER TABLE sql_file_installed"
+                                   " ADD statements_tracked BOOLEAN DEFAULT FALSE NOT NULL"
+                                   " BEFORE started_on")))
   (when-not (and (table-exists? conn "sql_file_installed")
                  (some #{"sql-file-1"} (all-schema-ids conn)))
     (let [started-on (now)]
@@ -582,18 +688,31 @@ interrupted it's simply repeated on the next open."
                                :started_on started-on
                                :completed_on (now)}))))
 
-(defn- check-incomplete-installs [conn]
-  "Fail if any schema script started but didn't finish. The database
-may have been partly changed by it, and running it again could fail
-or do damage."
-  (when-let [incomplete (seq (query-all conn [(str "SELECT schema_id, started_on FROM sql_file_installed"
-                                                   " WHERE how = 'run' AND completed_on IS NULL"
-                                                   " ORDER BY started_on")]))]
-    (throw (Exception. (str "Schema installation did not complete: "
-                            (clojure.string/join ", " (map #(str (:schema_id %) " (started " (:started_on %) ")")
-                                                           incomplete))
-                            ". The database may have been partly changed. Restore it from a backup,"
-                            " or repair it by hand and delete the schema's row from sql_file_installed.")))))
+(defn- check-incomplete-installs
+  "Fail if any schema script started but didn't finish, unless it can be
+resumed: statement tracking is on, and was on when the script ran (so
+it's known which statements were applied). Otherwise the database may
+have been partly changed, and running the script again could fail or
+do damage. With resumable set to false, nothing counts as resumable:
+used after installing, to catch incomplete installs that weren't
+requested and so weren't resumed."
+  ([conn]
+   (check-incomplete-installs conn (track-statements? conn)))
+
+  ([conn resumable]
+   (when-let [incomplete (seq (remove #(and resumable (:statements_tracked %))
+                                      (query-all conn [(str "SELECT schema_id, started_on, statements_tracked"
+                                                            " FROM sql_file_installed"
+                                                            " WHERE how = 'run' AND completed_on IS NULL"
+                                                            " ORDER BY started_on")])))]
+     (throw (Exception. (str "Schema installation did not complete: "
+                             (clojure.string/join ", " (map #(str (:schema_id %) " (started " (:started_on %) ")")
+                                                            incomplete))
+                             ". The database may have been partly changed. Restore it from a backup,"
+                             " or repair it by hand and delete the schema's row from sql_file_installed."
+                             (when (and (not resumable) (some :statements_tracked incomplete))
+                               (str " (Statements were tracked, so the install can be resumed with"
+                                    " :track-statements or :development-mode.)"))))))))
 
 ;; Public Entry points
 
@@ -646,15 +765,20 @@ numbered schemas), along with everything they require. Options:
      requested schemas don't cover (default from :development-mode)
   :on-schema-change - :error or :warn, for installed schema scripts
      that have changed since they were installed (default from
-     :development-mode)"
+     :development-mode)
+  :track-statements - record each statement as it's applied, so that a
+     script that fails partway through can be fixed and resumed
+     (default from :development-mode)"
   (log/info "Opening sql-file:" desc)
-  (let [conn (hsqldb-conn desc)]
+  (let [conn (assoc (hsqldb-conn desc)
+                    ::track-statements (get desc :track-statements (boolean (:development-mode desc))))]
     (ensure-sql-file-tables conn)
     (check-incomplete-installs conn)
     (check-schema-digests conn desc)
     (let [targets (get desc :schemas [])]
       (check-uncovered-schemas conn desc targets)
       (install-targets conn targets))
+    (check-incomplete-installs conn false)
     conn))
 
 (defn open-pool [desc]

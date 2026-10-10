@@ -25,6 +25,7 @@ CREATE CACHED TABLE sql_file_installed (
   requires VARCHAR(4096) NULL,
   replaces VARCHAR(4096) NULL,
   digest CHAR(64) NULL,
+  statements_tracked BOOLEAN DEFAULT FALSE NOT NULL,
   started_on TIMESTAMP NULL,
   completed_on TIMESTAMP NULL
 );

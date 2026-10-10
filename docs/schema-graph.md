@@ -87,6 +87,7 @@ CREATE CACHED TABLE sql_file_installed (
   requires VARCHAR(4096) NULL,     -- effective requires, newline separated
   replaces VARCHAR(4096) NULL,     -- newline separated
   digest CHAR(64) NULL,            -- hex SHA-256; NULL until known
+  statements_tracked BOOLEAN DEFAULT FALSE NOT NULL,
   started_on TIMESTAMP NULL,
   completed_on TIMESTAMP NULL      -- NULL while running, or if it failed
 );
@@ -271,7 +272,7 @@ Each can be overridden individually
 `:warn`). ectcommon's `start-app` would pass its own
 `:development-mode` setting through.
 
-## Statement-level tracking (phase 4)
+## Statement-level tracking (step 4)
 
 Enabled with `:track-statements true`, which defaults to the value of
 `:development-mode`.
@@ -290,6 +291,21 @@ Enabled with `:track-statements true`, which defaults to the value of
 * When the script finishes, its row is completed as usual. Statement
   rows are kept as a record of what ran.
 * With tracking disabled, an incomplete install is an error, as above.
+* Whether a script ran with tracking is recorded on its row
+  (`statements_tracked`). An install that ran untracked can't be
+  resumed, even with tracking on now: there's no record of which
+  statements were applied, and a failure on the first statement looks
+  the same as no tracking at all.
+* A resumed schema counts as not installed while resolving the request,
+  so its script is read again, and any `requires` added while fixing it
+  are installed first. Its row's `requires`, `replaces` and digest are
+  updated to the fixed script when it completes.
+* The digest check skips incomplete installs: their scripts are
+  expected to have changed.
+* After installing, any incomplete install that's still left (one
+  that wasn't requested, so wasn't resumed) is an error.
+* Databases opened with a 0.6.0 development snapshot before
+  `statements_tracked` existed get the column added on open.
 
 ## Public API
 
@@ -320,7 +336,7 @@ separate steps of the work, each with tests in the existing style
    id, the uncovered-schema check, `:development-mode`.
 3. **Step 3: digests.** (Done.) Computation, storage, checking and adoption for
    migrated rows.
-4. **Step 4: statement-level tracking and resume.**
+4. **Step 4: statement-level tracking and resume.** (Done.)
 5. **Later (possibly 1.0.0):** remove legacy `[name n]` requests and
    `get/set-schema-version`; drop `sql_file_schema`. Possibly 1.0.0.
 
