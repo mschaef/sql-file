@@ -26,6 +26,9 @@ following dependency:
 [com.mschaef/sql-file "0.6.0"]
 ```
 
+(0.6.0 is the release described here. Earlier releases use the older
+numbered schema scheme only; see Numbered Schemas.)
+
 ## Usage
 
 Example usage:
@@ -44,7 +47,29 @@ Example usage:
 This example opens (creating, if necessary) a file-based HSQLDB
 database named `test-db`, and installs the schema
 `points/0001-add-z` from `resources/points/0001-add-z.sql`, along with
-anything it requires.
+anything it requires. A name starting with `mem:` (`mem:test-db`)
+opens an in-memory database instead, which is useful for tests.
+
+### Options
+
+`open-local`, `open-pool` and `with-pool` take a map of options:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `:name` | (required) | HSQLDB database name: a file path, or `mem:<name>` for an in-memory database |
+| `:schemas` | `[]` | Schemas the application needs: ids, or `[name n]` for numbered schemas |
+| `:schema-path` | `[]` | Resource directories to search for scripts, before the root of the classpath |
+| `:development-mode` | `false` | Sets the defaults of the three options below for development |
+| `:on-schema-change` | `:error` (`:warn` in development) | An installed script has changed (see Detecting Changed Scripts) |
+| `:on-uncovered-schema` | `:error` (`:warn` in development) | Installed schemas the request doesn't cover (see Schemas Not Covered by the Request) |
+| `:track-statements` | `false` (`true` in development) | Record each statement as it's applied, so a failed script can be resumed |
+| `:pool-size` | `4` | `open-pool` and `with-pool`: maximum number of pooled connections |
+| `:pool` | `{}` | `open-pool` and `with-pool`: additional [HikariCP](https://github.com/tomekw/hikari-cp) settings |
+
+In short, `:development-mode true` turns two errors into warnings (an
+edited installed script, and installed schemas the request doesn't
+cover) and turns on statement tracking. Each can still be set
+individually.
 
 ### Schema Scripts and Dependencies
 
@@ -101,6 +126,12 @@ using `get-schema-version`:
 ;; 2
 ```
 
+`set-schema-version!` records versions of a numbered schema as
+installed without running their scripts (and removes any later
+versions). It's kept for compatibility with earlier releases and is
+deprecated, along with `get-schema-version` and the `[name n]` form;
+they may be removed in a future release.
+
 ### Replacing a Schema
 
 Sometimes a schema needs to be renamed, or a chain of schemas split
@@ -154,8 +185,12 @@ directive can't be silently ignored.
 `sql_file_installed`, one row per script. Each row records how the
 script was installed (`run`, `recorded` under a `replaces` directive,
 or `migrated` from an older `sql-file`), what it requires and
-replaces, and when it started and finished. `installed-schemas`
-returns these rows.
+replaces, its digest, whether its statements were tracked, and when it
+started and finished. `installed-schemas` returns these rows.
+
+`sql-file`'s own tables are recorded the same way, as `sql-file-0` and
+`sql-file-1`. They're managed by `sql-file` itself, so they're left out
+of the digest check and don't need to be covered by the request.
 
 The row for a script is written before the script runs, and marked
 complete when it finishes. If a script fails or is interrupted partway
@@ -163,7 +198,9 @@ through, the next attempt to open the database fails with a message
 naming it: the database may have been partly changed (HSQLDB doesn't
 roll back schema changes), so it needs restoring from a backup, or
 repairing by hand and the script's row deleting from
-`sql_file_installed`, before continuing.
+`sql_file_installed`, before continuing. The exception is a script that
+ran with statement tracking, which can be fixed and resumed instead
+(see the next section).
 
 Databases created by earlier versions of `sql-file` are migrated
 automatically the first time they're opened. The older
@@ -230,13 +267,64 @@ running against a newer database, for example after a rollback. This
 is an error by default, and a warning with `:development-mode true`.
 `:on-uncovered-schema` (`:error` or `:warn`) overrides either.
 
+## Connections and Pools
+
+`open-local` opens the database, installs schemas as described above,
+and returns a [java.jdbc](https://github.com/clojure/java.jdbc)
+connection map. `hsqldb-conn` returns the same kind of map without
+opening the database or installing anything.
+
+Applications serving more than one request at a time will usually want
+a connection pool. `open-pool` does everything `open-local` does, then
+adds a [HikariCP](https://github.com/tomekw/hikari-cp) pool (see the
+`:pool-size` and `:pool` options), and `close-pool` closes it.
+`with-pool` and `call-with-pool` open a pool for the duration of a body
+or function call:
+
+```clojure
+(sql-file/with-pool [db {:name "app-db" :schemas ["app/0003-tags"]}]
+  (jdbc/query db ["select count(*) from tag"]))
+```
+
+`ensure-schema` installs one more schema (an id or `[name n]`), with
+anything it requires, on a database that's already open. Unlike
+`open-local`, it doesn't check for schemas the request doesn't cover,
+since it only knows about the one schema.
+
+`sql-file.sql-util` has small query helpers built on java.jdbc:
+`query-all` (all rows), `query-first` (the first row, or `nil`),
+`query-column` (the values of a single-column result), `query-scalar`
+(the single value of a single-column result, or a default if there are
+no rows) and `query-scalar-required` (the same, but throwing if there
+are no rows).
+
+## Maintenance
+
+These functions each take an open connection:
+
+* `backup-to-file-blocking` and `backup-to-file-online` back up the
+  database to the given path, with HSQLDB's `BACKUP DATABASE`. The
+  blocking form stops other work on the database while it runs; the
+  online form doesn't.
+* `checkpoint-defragment` runs HSQLDB's `CHECKPOINT DEFRAG`, compacting
+  the database files.
+* `start-sqltool-shell` starts an interactive HSQLDB SqlTool shell on
+  standard input and output, against a connection opened with
+  `jdbc/with-db-connection`.
+
 ## Diagnostics
 
-`sql-file` attempts to provide useful debug messages on the
-`sql-file.core` log channel. At `INFO` level, `sql-file` will log only
-important events (opening a database, installation of a schema,
-etc.). At `DEBUG` level, it will list each SQL statement as it's
-executed.
+`sql-file` logs on the `sql-file.core` log channel.
+
+* At `INFO`, it logs important events: opening a database, installing
+  or recording a schema, migrating records from an earlier `sql-file`,
+  recording digests for schemas installed before digests existed, and
+  resuming a failed script.
+* At `WARN`, it logs the conditions that `:development-mode` (or
+  `:on-schema-change` / `:on-uncovered-schema` set to `:warn`) turns
+  from errors into warnings: edited installed scripts, and installed
+  schemas the request doesn't cover.
+* At `DEBUG`, it also lists each SQL statement as it's executed.
 
 ## Limitations
 
@@ -255,7 +343,7 @@ I would happily accept PRs to fix these or other issues.
 
 ## License
 
-Copyright © 2015-2024 [Michael Schaeffer](http://www.mschaef.com/)
+Copyright © 2015-2026 [Michael Schaeffer](https://mschaef.com/)
 
 Portions Copyright © 2014 [KSM Technology Partners](https://www.ksmpartners.com/)
 
