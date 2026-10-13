@@ -59,34 +59,65 @@ for a numbered script. Throws if there's no such script."
                                        basename)
                                 ") in search path " (schema-path conn))))))))
 
+(defn- statement-location [stmt]
+  (str (:url stmt) "(" (:line stmt) ":" (:column stmt) ")"))
+
+(def ^:private repeat-progress-interval-msec 10000)
+
+(defn- repeat-statement [cdb stmt]
+  "Run a statement marked with the repeat directive: again and again, each
+time in its own transaction, until it changes no rows. Progress is
+logged periodically, so a long run is visible."
+  (let [location (statement-location stmt)
+        start (System/currentTimeMillis)]
+    (log/info "Repeating statement until it changes no rows:" location)
+    (loop [passes 1
+           total 0
+           last-report start]
+      (let [changed (long (first (jdbc/db-do-prepared cdb (:statement stmt))))
+            total (+ total changed)
+            time (System/currentTimeMillis)]
+        (if (pos? changed)
+          (recur (inc passes)
+                 total
+                 (if (>= (- time last-report) repeat-progress-interval-msec)
+                   (do
+                     (log/info "Repeating statement" location "-" passes "passes," total "rows so far")
+                     time)
+                   last-report))
+          (log/info "Repeated statement" location "-" passes "passes," total "rows in"
+                    (- time start) "msec"))))))
+
 (defn do-statements [conn stmts]
-  "Execute a sequence of statements against the given DB connection."
+  "Execute a sequence of statements against the given DB connection. A
+statement with :repeat set is run repeatedly until it changes no rows."
   (jdbc/with-db-connection [cdb conn]
     (doseq [stmt stmts]
-      (log/debug "Executing SQL:" (str (:url stmt) "(" (:line stmt) ":" (:column stmt) ")") (:statement stmt))
+      (log/debug "Executing SQL:" (statement-location stmt) (:statement stmt))
       (try
-        (jdbc/db-do-prepared cdb (:statement stmt))
+        (if (:repeat stmt)
+          (repeat-statement cdb stmt)
+          (jdbc/db-do-prepared cdb (:statement stmt)))
         (catch Exception ex
           (throw (Exception. (str "Error running statement: " stmt) ex)))))))
 
 (defn- run-script
-  "Run the database script with the given text (read from the given
-URL) against a specific database connection. With on-statement, the
+  "Run the statements of a database script (read from the given URL)
+against a specific database connection. With on-statement, the
 statements are numbered from 1, those before first-ordinal are
-skipped, and (on-statement ordinal statement-text) is called after
-each one succeeds."
-  ([conn script-url script-text]
+skipped, and (on-statement ordinal statement) is called after each one
+succeeds."
+  ([conn script-url statements]
    (log/info "Run DB script:" (str script-url))
-   (do-statements conn (map #(assoc % :url script-url)
-                            (script/sql-statements script-text))))
+   (do-statements conn (map #(assoc % :url script-url) statements)))
 
-  ([conn script-url script-text first-ordinal on-statement]
+  ([conn script-url statements first-ordinal on-statement]
    (log/info "Run DB script:" (str script-url)
              (if (> first-ordinal 1) (str "from statement " first-ordinal) ""))
-   (doseq [[ordinal stmt] (map vector (iterate inc 1) (script/sql-statements script-text))
+   (doseq [[ordinal stmt] (map vector (iterate inc 1) statements)
            :when (>= ordinal first-ordinal)]
      (do-statements conn [(assoc stmt :url script-url)])
-     (on-statement ordinal (:statement stmt)))))
+     (on-statement ordinal stmt))))
 
 ;;; Script directives
 ;;;
@@ -111,12 +142,28 @@ each one succeeds."
 ;;; already has that other schema, the script is not run; it's
 ;;; recorded as installed instead. This is how a schema is renamed,
 ;;; or a chain of schemas split into several or merged.
+;;;
+;;; One directive applies to a single statement, and can appear
+;;; anywhere in the script, on its own line before that statement
+;;; (with only blank lines and comments in between):
+;;;
+;;;   -- sql-file: repeat
+;;;
+;;; The statement is run repeatedly, each time in its own transaction,
+;;; until it changes no rows. This splits a large update or delete into
+;;; batches: the statement is written to change a limited number of
+;;; rows that still need changing (UPDATE ... WHERE ... LIMIT n). A
+;;; script with a repeated statement is always run with statement
+;;; tracking, so that if it's interrupted, it's resumed rather than
+;;; started over.
 
 (def ^:private directive-regex #"^--\s*sql-file:\s*(.*?)\s*$")
 
 (def ^:private requires-regex #"requires\s+(\S+)")
 
 (def ^:private replaces-regex #"replaces\s+(\S+)(?:\s+(\d+))?")
+
+(def ^:private repeat-regex #"repeat")
 
 (defn- leading-comment-lines [script-text]
   (->> (clojure.string/split-lines script-text)
@@ -136,10 +183,58 @@ misspelled directive can't be silently ignored."
                   (update directives :replaces conj (if version
                                                       (str schema-id "-" version)
                                                       schema-id))
-                  (throw (Exception. (str "Unrecognized sql-file directive: " line)))))
+                  (if (re-matches repeat-regex directive)
+                    directives ; A statement directive; see statement-directives.
+                    (throw (Exception. (str "Unrecognized sql-file directive: " line))))))
               directives))
           {:requires [] :replaces []}
           (leading-comment-lines script-text)))
+
+(defn- blank-or-comment? [^String line]
+  (let [line (clojure.string/trim line)]
+    (or (= "" line) (.startsWith line "--"))))
+
+(defn- statement-directives [script-text statements]
+  "Apply statement directives to the statements (as returned by
+sql-statements) that they precede, setting :repeat on repeated
+statements. A statement directive must be on its own line, followed by
+the start of its statement on a line of its own, with only blank lines
+and comments in between. requires and replaces directives outside the
+leading comment block are an error, rather than being ignored."
+  (let [lines (vec (clojure.string/split-lines script-text))
+        leading (count (leading-comment-lines script-text))
+        statements (vec statements)
+        repeated (atom #{})]
+    (doseq [[index raw-line] (map-indexed vector lines)
+            :let [line (clojure.string/trim raw-line)
+                  line-number (inc index)]
+            :when (re-matches directive-regex line)
+            :let [[_ directive] (re-matches directive-regex line)]]
+      (cond
+        (re-matches repeat-regex directive)
+        (let [target (first (keep-indexed (fn [i stmt] (when (> (:line stmt) line-number) i))
+                                          statements))
+              stmt (when target (statements target))]
+          (when-not (and stmt
+                         (every? blank-or-comment? (subvec lines line-number (dec (:line stmt))))
+                         (clojure.string/blank? (subs (lines (dec (:line stmt))) 0 (dec (:column stmt)))))
+            (throw (Exception. (str "The sql-file directive on line " line-number " (" line ")"
+                                    " must be followed by the statement it applies to, starting on a"
+                                    " line of its own, with only blank lines and comments in between."))))
+          (swap! repeated conj target))
+
+        (< index leading)
+        nil ; File directives, read by script-directives.
+
+        (or (re-matches requires-regex directive) (re-matches replaces-regex directive))
+        (throw (Exception. (str "The sql-file directive on line " line-number " (" line ")"
+                                " must be in the leading comment block, before the first statement.")))
+
+        :else
+        (throw (Exception. (str "Unrecognized sql-file directive on line " line-number ": " line)))))
+    (vec (map-indexed (fn [i stmt]
+                        (cond-> stmt (@repeated i) (assoc :repeat true)))
+                      statements))))
 
 ;;; Install tracking
 ;;;
@@ -261,11 +356,15 @@ are removed."
 ;;; them. sql-statements collapses runs of whitespace and drops --
 ;;; comments, so reformatting or re-commenting a script doesn't change
 ;;; its digest; changing a statement, a dependency or a replacement
-;;; does. Each element is encoded as a one-byte tag, its length in
-;;; UTF-8 bytes (four bytes, big-endian), and its bytes, so no two
-;;; different scripts encode the same way.
+;;; does, as does a statement directive (repeat). Each element is
+;;; encoded as a one-byte tag, its length in UTF-8 bytes (four bytes,
+;;; big-endian), and its bytes, so no two different scripts encode the
+;;; same way. A statement without directives encodes as it did before
+;;; statement directives existed, so existing digests are unchanged.
 
 (defn- digest-of [requires replaces statements]
+  "requires and replaces are sequences of ids, statements a sequence of
+statements: strings, or maps with :statement and :repeat."
   (let [md (java.security.MessageDigest/getInstance "SHA-256")
         add (fn [tag ^String value]
               (let [bytes (.getBytes value "UTF-8")
@@ -275,7 +374,11 @@ are removed."
                 (.update md bytes)))]
     (doseq [id requires] (add \R id))
     (doseq [id replaces] (add \P id))
-    (doseq [stmt statements] (add \S stmt))
+    (doseq [stmt statements]
+      (let [stmt (if (string? stmt) {:statement stmt} stmt)]
+        (when (:repeat stmt)
+          (add \D "repeat"))
+        (add \S (:statement stmt))))
     (apply str (map #(format "%02x" %) (.digest md)))))
 
 ;;; Schema scripts and the dependency graph
@@ -291,23 +394,31 @@ are removed."
 
 (defn- read-script [conn schema-id]
   "Locate and read the script for a schema id, returning a map with
-:id, :url, :text, :requires (the effective requires: for a numbered
-script, the previous version first, then any declared), :replaces, and
-:legacy ([name n] for a numbered script)."
+:id, :url, :text, :statements (with statement directives applied),
+:requires (the effective requires: for a numbered script, the previous
+version first, then any declared), :replaces, :legacy ([name n] for a
+numbered script) and :digest."
   (when-not (valid-schema-id? schema-id)
     (throw (Exception. (str "Invalid schema id: " (pr-str schema-id)))))
   (let [{:keys [url legacy]} (locate-schema-script conn schema-id)
         text (slurp url)
         {:keys [requires replaces]} (script-directives text)
+        statements (statement-directives text (script/sql-statements text))
         implicit (when legacy (apply legacy-requires legacy))]
     (let [requires (vec (distinct (concat (when implicit [implicit]) requires)))]
       {:id schema-id
        :url url
        :text text
+       :statements statements
        :requires requires
        :replaces replaces
        :legacy legacy
-       :digest (digest-of requires replaces (map :statement (script/sql-statements text)))})))
+       :digest (digest-of requires replaces statements)})))
+
+(defn- repeats? [script]
+  "True if the script has a repeated statement. Such a script is always
+run with statement tracking, and can always be resumed."
+  (boolean (some :repeat (:statements script))))
 
 (defn- installed-graph [conn]
   "The installed schemas, as a map from id to {:requires [...]
@@ -442,17 +553,21 @@ anything is installed."
 ;;; install that fails partway through can then be resumed after the
 ;;; script is fixed: statements already applied are skipped, provided
 ;;; they haven't changed, and the rest are run.
+;;;
+;;; Statement tracking is on for a connection with :track-statements
+;;; (or :development-mode), and always on for a script with a repeated
+;;; statement.
 
 (defn- track-statements? [conn]
   (boolean (::track-statements conn)))
 
-(defn- statement-digest [statement-text]
-  (digest-of [] [] [statement-text]))
+(defn- statement-digest [stmt]
+  (digest-of [] [] [stmt]))
 
-(defn- record-statement! [conn schema-id ordinal statement-text]
+(defn- record-statement! [conn schema-id ordinal stmt]
   (jdbc/insert! conn :sql_file_statement {:schema_id schema-id
                                           :ordinal ordinal
-                                          :digest (statement-digest statement-text)
+                                          :digest (statement-digest stmt)
                                           :completed_on (now)}))
 
 (defn installed-statements [conn schema-id]
@@ -466,8 +581,8 @@ tracking was on: maps with :ordinal (from 1), :digest and
 (defn- resume-point [conn script]
   "For a tracked install that didn't finish, the ordinal of the first
 statement still to run. Statements already applied must be unchanged."
-  (let [{:keys [id text]} script
-        statements (vec (map :statement (script/sql-statements text)))
+  (let [{:keys [id]} script
+        statements (:statements script)
         applied (installed-statements conn id)]
     (doseq [{:keys [ordinal digest]} applied]
       (when (> ordinal (count statements))
@@ -486,10 +601,10 @@ statement still to run. Statements already applied must be unchanged."
                      schema-id]))
 
 (defn- run-tracked [conn script first-ordinal]
-  (let [{:keys [id url text]} script]
-    (run-script conn url text first-ordinal
-                (fn [ordinal statement-text]
-                  (record-statement! conn id ordinal statement-text)))))
+  (let [{:keys [id url statements]} script]
+    (run-script conn url statements first-ordinal
+                (fn [ordinal stmt]
+                  (record-statement! conn id ordinal stmt)))))
 
 (defn- resume-script [conn script]
   "Finish a tracked install that failed partway through, with the
@@ -510,7 +625,8 @@ script as it is now. The schema's row is updated to match the script."
 installed. If the script declares that it replaces schemas already
 present in the database, the script is not run and the schema is just
 recorded as installed."
-  (let [{:keys [id url text requires replaces legacy digest]} script]
+  (let [{:keys [id url statements requires replaces legacy digest]} script
+        tracked (or (track-statements? conn) (repeats? script))]
     (log/info "Installing schema:" id)
     (try
       (cond
@@ -536,11 +652,11 @@ recorded as installed."
                                    :requires (join-ids requires)
                                    :replaces (join-ids replaces)
                                    :digest digest
-                                   :statements_tracked (track-statements? conn)
+                                   :statements_tracked tracked
                                    :started_on (now)})
-          (if (track-statements? conn)
+          (if tracked
             (run-tracked conn script 1)
-            (run-script conn url text))
+            (run-script conn url statements))
           (jdbc/update! conn :sql_file_installed
                         {:completed_on (now)}
                         ["schema_id = ?" id])))
@@ -639,7 +755,7 @@ Scripts that no longer exist are skipped, as are sql-file's own."
 
 (defn- run-internal-script [conn version]
   (let [script-url (clojure.java.io/resource (format "schema-sql-file-%s.sql" version))]
-    (run-script conn script-url (slurp script-url))))
+    (run-script conn script-url (script/sql-statements (slurp script-url)))))
 
 (defn- migrate-legacy-schema-rows! [conn]
   "Copy the older sql_file_schema table into sql_file_installed: a row
@@ -688,19 +804,31 @@ interrupted it's simply repeated on the next open."
                                :started_on started-on
                                :completed_on (now)}))))
 
+(defn- resumable-script? [conn schema-id]
+  "Whether the current script for schema-id is one that's always
+tracked, and so can always be resumed: one with a repeated statement."
+  (try
+    (repeats? (read-script conn schema-id))
+    (catch Exception _
+      false)))
+
 (defn- check-incomplete-installs
   "Fail if any schema script started but didn't finish, unless it can be
-resumed: statement tracking is on, and was on when the script ran (so
-it's known which statements were applied). Otherwise the database may
-have been partly changed, and running the script again could fail or
-do damage. With resumable set to false, nothing counts as resumable:
-used after installing, to catch incomplete installs that weren't
-requested and so weren't resumed."
+resumed: its statements were tracked when it ran (so it's known which
+were applied), and statement tracking is on, or the script has a
+repeated statement. Otherwise the database may have been partly
+changed, and running the script again could fail or do damage. With
+resumable set to false, nothing counts as resumable: used after
+installing, to catch incomplete installs that weren't requested and so
+weren't resumed."
   ([conn]
-   (check-incomplete-installs conn (track-statements? conn)))
+   (check-incomplete-installs conn true))
 
   ([conn resumable]
-   (when-let [incomplete (seq (remove #(and resumable (:statements_tracked %))
+   (when-let [incomplete (seq (remove #(and resumable
+                                            (:statements_tracked %)
+                                            (or (track-statements? conn)
+                                                (resumable-script? conn (:schema_id %))))
                                       (query-all conn [(str "SELECT schema_id, started_on, statements_tracked"
                                                             " FROM sql_file_installed"
                                                             " WHERE how = 'run' AND completed_on IS NULL"
@@ -710,7 +838,7 @@ requested and so weren't resumed."
                                                             incomplete))
                              ". The database may have been partly changed. Restore it from a backup,"
                              " or repair it by hand and delete the schema's row from sql_file_installed."
-                             (when (and (not resumable) (some :statements_tracked incomplete))
+                             (when (some :statements_tracked incomplete)
                                (str " (Statements were tracked, so the install can be resumed with"
                                     " :track-statements or :development-mode.)"))))))))
 
@@ -768,18 +896,54 @@ numbered schemas), along with everything they require. Options:
      :development-mode)
   :track-statements - record each statement as it's applied, so that a
      script that fails partway through can be fixed and resumed
-     (default from :development-mode)"
+     (default from :development-mode)
+  :on-pending-schema - :install (the default) to install schemas that
+     the requested schemas need, or :error to refuse to open the
+     database until they've been installed separately, with migrate
+  :backup-before-install - a path to back the database up to (with
+     BACKUP DATABASE ... BLOCKING) before installing anything"
   (log/info "Opening sql-file:" desc)
   (let [conn (assoc (hsqldb-conn desc)
-                    ::track-statements (get desc :track-statements (boolean (:development-mode desc))))]
+                    ::track-statements (get desc :track-statements (boolean (:development-mode desc))))
+        on-pending (get desc :on-pending-schema :install)]
+    (when-not (#{:install :error} on-pending)
+      (throw (Exception. (str "Invalid :on-pending-schema " (pr-str on-pending)
+                              ", expected :install or :error"))))
     (ensure-sql-file-tables conn)
     (check-incomplete-installs conn)
     (check-schema-digests conn desc)
     (let [targets (get desc :schemas [])]
       (check-uncovered-schemas conn desc targets)
-      (install-targets conn targets))
+      (when-let [pending (seq (map :id (install-order conn (map schema-target-id targets))))]
+        (when (= on-pending :error)
+          (throw (Exception. (str "Schemas need to be installed: " (clojure.string/join ", " pending)
+                                  ". Install them separately with sql-file.core/migrate, or open"
+                                  " with :on-pending-schema :install."))))
+        (when-let [backup-path (:backup-before-install desc)]
+          (log/info "Backing up to" backup-path "before installing:" (clojure.string/join ", " pending))
+          (backup-to-file-blocking conn backup-path))
+        (install-targets conn targets)))
     (check-incomplete-installs conn false)
     conn))
+
+(defn migrate [desc]
+  "Install whatever the schemas requested in desc need, then shut the
+database down. This is for installing schemas separately from
+application startup, for instance as a command run before starting an
+application that opens its database with :on-pending-schema :error.
+desc is as for open-local. Returns the ids of the schemas installed (or
+resumed), ordered by completion time."
+  (let [start (now)
+        conn (open-local (assoc desc :on-pending-schema :install))
+        installed (->> (installed-schemas conn)
+                       (filter #(and (:completed_on %)
+                                     (not (.before ^java.sql.Timestamp (:completed_on %) start))
+                                     (not (.startsWith ^String (:schema_id %) "sql-file-"))))
+                       (sort-by :completed_on)
+                       (map :schema_id))]
+    (log/info "Installed schemas:" (if (seq installed) (clojure.string/join ", " installed) "none"))
+    (jdbc/db-do-prepared conn "SHUTDOWN")
+    (vec installed)))
 
 (defn open-pool [desc]
   (log/info "Opening sql-file (pooled):" desc)

@@ -652,3 +652,188 @@ write and edit schema scripts between opens."
     (jdbc/db-do-prepared conn "ALTER TABLE sql_file_installed DROP COLUMN statements_tracked"))
   (jdbc/with-db-connection [conn (open-test-db "graph/base")]
     (is (false? (:statements_tracked (installed-row conn "graph/base"))))))
+
+;;; Repeated statements (-- sql-file: repeat)
+
+(defn- write-items-script!
+  "A script that creates n items with no priority, then gives them all
+one, two rows at a time, followed by extra-lines."
+  [n & extra-lines]
+  (apply write-script! "work/items"
+         "CREATE CACHED TABLE item (id INT PRIMARY KEY, priority INT);"
+         (str "INSERT INTO item SELECT n, NULL FROM"
+              " (SELECT ROWNUM() n FROM INFORMATION_SCHEMA.COLUMNS) x WHERE n <= " n ";")
+         "-- Two rows at a time"
+         "-- sql-file: repeat"
+         ""
+         "UPDATE item SET priority = 0 WHERE priority IS NULL LIMIT 2;"
+         extra-lines))
+
+(defn- count-unprioritized [conn]
+  (query-scalar conn ["SELECT COUNT(*) FROM item WHERE priority IS NULL"]))
+
+(deftest repeated-statements-run-until-they-change-nothing
+  (with-script-dir
+    (fn []
+      (write-items-script! 7)
+      (jdbc/with-db-connection [conn (open-test-db "work/items")]
+        (is (= 7 (query-scalar conn ["SELECT COUNT(*) FROM item"])))
+        (is (zero? (count-unprioritized conn)))))))
+
+(deftest a-repeated-statement-with-nothing-to-do-runs-once
+  (with-script-dir
+    (fn []
+      (write-items-script! 0)
+      (jdbc/with-db-connection [conn (open-test-db "work/items")]
+        (is (some? (:completed_on (installed-row conn "work/items"))))))))
+
+(deftest without-repeat-a-limited-statement-runs-once
+  (with-script-dir
+    (fn []
+      (write-script! "work/items"
+                     "CREATE CACHED TABLE item (id INT PRIMARY KEY, priority INT);"
+                     "INSERT INTO item VALUES (1, NULL), (2, NULL), (3, NULL);"
+                     "UPDATE item SET priority = 0 WHERE priority IS NULL LIMIT 2;")
+      (jdbc/with-db-connection [conn (open-test-db "work/items")]
+        (is (= 1 (count-unprioritized conn)))))))
+
+(deftest repeat-can-apply-to-the-first-statement
+  (with-script-dir
+    (fn []
+      (write-script! "work/base"
+                     "CREATE CACHED TABLE item (id INT PRIMARY KEY, priority INT);"
+                     "INSERT INTO item VALUES (1, NULL), (2, NULL), (3, NULL);")
+      (write-script! "work/first"
+                     "-- sql-file: requires work/base"
+                     "-- sql-file: repeat"
+                     "UPDATE item SET priority = 0 WHERE priority IS NULL LIMIT 1;")
+      (jdbc/with-db-connection [conn (open-test-db "work/first")]
+        (is (zero? (count-unprioritized conn)))))))
+
+(def ^:private statement-directives #'core/statement-directives)
+
+(defn- directive-statements [& lines]
+  (let [text (clojure.string/join "\n" lines)]
+    (map (juxt :statement :repeat)
+         (statement-directives text (sql-file.script/sql-statements text)))))
+
+(deftest statement-directive-placement
+  (testing "repeat applies to the next statement, past blank lines and comments"
+    (is (= [["A" nil] ["B" true] ["C" nil]]
+           (directive-statements "A;" "-- sql-file: repeat" "" "-- a comment" "B;" "C;"))))
+
+  (testing "repeat in the leading comment block applies to the first statement"
+    (is (= [["A" true] ["B" nil]]
+           (directive-statements "-- sql-file: requires x" "-- sql-file: repeat" "A;" "B;"))))
+
+  (testing "repeat must be followed by a statement"
+    (is (thrown-with-msg? Exception #"line 2 .* must be followed by the statement"
+                          (directive-statements "A;" "-- sql-file: repeat"))))
+
+  (testing "repeat inside a statement is an error"
+    (is (thrown-with-msg? Exception #"line 2 .* must be followed by the statement"
+                          (directive-statements "UPDATE x" "-- sql-file: repeat" "SET y = 1;" "B;")))
+    (is (thrown-with-msg? Exception #"line 2 .* must be followed by the statement"
+                          (directive-statements "UPDATE x" "-- sql-file: repeat" "SET y = 1; B;"))))
+
+  (testing "requires and replaces after the first statement are an error"
+    (is (thrown-with-msg? Exception #"line 2 .* must be in the leading comment block"
+                          (directive-statements "A;" "-- sql-file: requires x")))
+    (is (thrown-with-msg? Exception #"line 2 .* must be in the leading comment block"
+                          (directive-statements "A;" "-- sql-file: replaces x 1"))))
+
+  (testing "unrecognized directives after the first statement are an error"
+    (is (thrown-with-msg? Exception #"Unrecognized sql-file directive on line 2"
+                          (directive-statements "A;" "-- sql-file: repaet")))))
+
+(deftest repeat-is-part-of-the-digest
+  (testing "repeat changes a digest"
+    (is (not= (digest-of [] [] ["A"]) (digest-of [] [] [{:statement "A" :repeat true}]))))
+
+  (testing "scripts without statement directives keep their digests"
+    ;; Recorded with sql-file 0.6.0.
+    (is (= "66d0bbd63f181be53894116a8ddc39016be9c6ddd20ecf835e27f319020e84ba"
+           (core/script-digest {} "graph/base")))
+    (is (= "d33645272fde9a2ce3f388222e6bdfb9cdaae62b86474a7999f1e471801b2371"
+           (core/script-digest {} "test-1")))))
+
+(deftest scripts-with-repeated-statements-are-always-tracked
+  (with-script-dir
+    (fn []
+      (write-items-script! 3 "CREATE CACHED TABLE after_items (x INT);")
+      (jdbc/with-db-connection [conn (open-test-db "work/items")]
+        (is (true? (:statements_tracked (installed-row conn "work/items"))))
+        (is (= [1 2 3 4] (statement-ordinals conn "work/items")))))))
+
+;; Other scripts still need statement tracking on to resume; see
+;; resuming-needs-statement-tracking.
+(deftest scripts-with-repeated-statements-resume-without-statement-tracking
+  (with-script-dir
+    (fn []
+      (write-items-script! 5 "CREATE CACHED TABLE after_items (x INT;")
+      (is (thrown? Exception (open-test-db-strictly "work/items")))
+      (is (= [1 2 3] (statement-ordinals test-db "work/items")))
+      (is (zero? (count-unprioritized test-db)))
+
+      (testing "once fixed, the install resumes, without :track-statements"
+        (write-items-script! 5 "CREATE CACHED TABLE after_items (x INT);")
+        (jdbc/with-db-connection [conn (open-test-db-strictly "work/items")]
+          (is (= 5 (query-scalar conn ["SELECT COUNT(*) FROM item"])))
+          (is (= [1 2 3 4] (statement-ordinals conn "work/items")))
+          (is (some? (:completed_on (installed-row conn "work/items")))))))))
+
+;;; Installing separately from startup (:on-pending-schema, migrate)
+
+(defn- temp-db-name []
+  (let [dir (.toFile (java.nio.file.Files/createTempDirectory
+                      "sql-file-db" (make-array java.nio.file.attribute.FileAttribute 0)))]
+    {:dir dir
+     :name (str (clojure.java.io/file dir "db"))}))
+
+(deftest pending-schemas-can-be-an-error
+  (is (thrown-with-msg? Exception #"Schemas need to be installed: graph/base, graph/left"
+                        (core/open-local {:name test-db-name :schemas ["graph/left"]
+                                          :on-pending-schema :error})))
+
+  (testing "nothing was installed"
+    (is (not (table-exists? test-db "install_log"))))
+
+  (testing "with nothing pending, the database opens"
+    (open-test-db "graph/left")
+    (is (some? (core/open-local {:name test-db-name :schemas ["graph/left"]
+                                 :on-pending-schema :error}))))
+
+  (testing "invalid settings are rejected"
+    (is (thrown-with-msg? Exception #"Invalid :on-pending-schema :warn"
+                          (core/open-local {:name test-db-name :schemas ["graph/left"]
+                                            :on-pending-schema :warn})))))
+
+(deftest migrate-installs-then-shuts-down
+  (let [{:keys [name]} (temp-db-name)
+        desc {:name name :schemas ["graph/left"] :on-pending-schema :error}]
+    (is (thrown? Exception (core/open-local desc)))
+    (is (= ["graph/base" "graph/left"] (core/migrate desc)))
+
+    (testing "the application then opens the database without installing"
+      (let [conn (core/open-local desc)]
+        (is (= 2 (query-scalar conn ["SELECT COUNT(*) FROM install_log"])))
+        (jdbc/db-do-prepared conn "SHUTDOWN")))
+
+    (testing "with nothing to install, migrate installs nothing"
+      (is (= [] (core/migrate desc))))))
+
+(deftest backup-before-install
+  (let [{:keys [dir name]} (temp-db-name)
+        backups (clojure.java.io/file dir "backups")
+        desc {:name name
+              :schemas ["graph/base"]
+              :backup-before-install (str backups "/")}
+        backup-count #(count (.listFiles backups))]
+    (core/migrate (assoc desc :schemas []))
+    (is (not (.exists backups)) "nothing to install, so no backup")
+
+    (core/migrate desc)
+    (is (= 1 (backup-count)))
+
+    (core/migrate desc)
+    (is (= 1 (backup-count)) "nothing more to install")))

@@ -1,4 +1,23 @@
 * Pending
+** External SqlTool connections to a running application
+   Optionally run HSQLDB's network server in-process (a :server option
+   on open-local/open-pool) so SqlTool can attach to a running app.
+   Authentication is the main issue outside development mode. See
+   docs/sqltool-server.md.
+** Clojure migration steps
+   A "-- sql-file: call ns/fn" directive for migration work SQL handles
+   badly. Retired with the old scripts via replaces. See
+   docs/large-migrations.md, option 2.
+** Expand/contract migrations with background (deferred) schemas
+   For zero-downtime changes. See docs/large-migrations.md, option 4.
+* Completed
+** Batched statements: -- sql-file: repeat
+   A statement repeated, each pass its own transaction, until it
+   changes no rows. Always tracked and resumable. See
+   docs/large-migrations.md, option 1.
+** Installing schemas separately from startup
+   :on-pending-schema :error, migrate, and :backup-before-install. See
+   docs/large-migrations.md, option 3.
 ** Switch to explicit schema naming rather than schema-<schema_name>-<version>.sql
   Current design relies on well known schema names, which impose a
   specific versioning scheme. Rather, the schema filename can be fully
@@ -14,23 +33,32 @@
 
   An elaboration of this would be to allow schemas to be specified as
   paths. So "sql-file/v1" referring to "sql-file/v1.sql".
+   Done in 0.6.0: string schema ids (<id>.sql) with dependencies declared
+   by "-- sql-file: requires <id>". An id containing a slash resolves
+   as a resource path, though that isn't tested or documented.
 ** Store digest of schema files and uses that to detect uninstalled script changes.
+   Done in 0.6.0: SHA-256 over requires, replaces and parsed statements,
+   checked on open (:on-schema-change).
 ** Store digest of individual schema script statements
   This would allow schema scripts to be partially applied (in the
   event of a failure) and re-run to complete. Careful use of this
   feature would make it possible to incrementally develop schema
   migration scripts without restoring the database every cycle.
+   Done in 0.6.0: :track-statements, with resume of a partially
+   applied script (development mode).
 ** There is the ability to request installation and migrations of schemas from within schema scripts.
    Special case handling within a schema script. Something like this
 
    @(ensure [ "schema-name" 0 ])
 
    Or as above: --schema: schema-name-v0
+   Done in 0.6.0 as the requires directive, rather than @(ensure ...).
 ** Logging of the times associated with schema operations
    Separate table with schema name, version, and begin/end time of the
    operation that caused that schema version to be present. SHA1 hash
    of schema script?
-* Completed
+   Done in 0.6.0: sql_file_installed records started_on, completed_on,
+   how, and a SHA-256 digest.
 ** There is a way to set a directory prefix for the schema file scan.
 ** There is support for some kind of connection pooling, in order to avoid open/closee
 

@@ -63,6 +63,8 @@ opens an in-memory database instead, which is useful for tests.
 | `:on-schema-change` | `:error` (`:warn` in development) | An installed script has changed (see Detecting Changed Scripts) |
 | `:on-uncovered-schema` | `:error` (`:warn` in development) | Installed schemas the request doesn't cover (see Schemas Not Covered by the Request) |
 | `:track-statements` | `false` (`true` in development) | Record each statement as it's applied, so a failed script can be resumed |
+| `:on-pending-schema` | `:install` | `:error` refuses to open a database with schemas still to install (see Installing Schemas Separately from Startup) |
+| `:backup-before-install` | `nil` | A path to back the database up to before installing anything |
 | `:pool-size` | `4` | `open-pool` and `with-pool`: maximum number of pooled connections |
 | `:pool` | `{}` | `open-pool` and `with-pool`: additional [HikariCP](https://github.com/tomekw/hikari-cp) settings |
 
@@ -175,9 +177,10 @@ scripts, the old scripts can be deleted. A database that still needs
 them will then fail with a message naming the missing script, rather
 than running the new scripts over existing tables.
 
-Directives must appear before the first statement in the script. Any
-other `-- sql-file:` comment there is an error, so a misspelled
-directive can't be silently ignored.
+`requires` and `replaces` directives must appear before the first
+statement in the script; after it, they're an error. Any unrecognized
+`-- sql-file:` comment is also an error, so a misspelled directive
+can't be silently ignored.
 
 ### Installation Records
 
@@ -225,13 +228,69 @@ the rest. The script's record is updated to match the fixed script.
   statement match what was applied. Removing one is too.
 * An install that ran without statement tracking can't be resumed,
   because there's no record of which statements were applied. It's
-  reported as incomplete, as described above.
+  reported as incomplete, as described above. (Scripts with a repeated
+  statement are the exception: they're always tracked, and can always
+  be resumed. See the next section.)
 * Without statement tracking, an install that was tracked is still
   reported as incomplete, with a note that it can be resumed with
   `:track-statements` or `:development-mode`.
 
 Statement records are kept after the script completes, as a record of
 what ran and when.
+
+### Large Updates in Batches
+
+A single statement that updates or deletes many rows runs as one large
+transaction, and if it's interrupted, the work is lost. A statement
+preceded by a `repeat` directive is instead run again and again, each
+time in its own transaction, until it changes no rows:
+
+```sql
+-- sql-file: requires app/0007-priority
+
+-- sql-file: repeat
+UPDATE item SET priority = 0 WHERE priority IS NULL LIMIT 10000;
+```
+
+The statement does the batching itself: it changes a limited number of
+the rows that still need changing, so each pass makes progress and the
+last pass finds nothing left to do. HSQLDB accepts `LIMIT` directly on
+`UPDATE` and `DELETE`. To work through rows in a particular order, use
+a subquery, since `ORDER BY` isn't allowed there:
+
+```sql
+-- sql-file: repeat
+UPDATE item SET priority = 0
+ WHERE id IN (SELECT id FROM item WHERE priority IS NULL ORDER BY id LIMIT 10000);
+```
+
+A few things to keep in mind:
+
+* The statement must eventually change no rows, or it runs forever.
+  Make sure the rows it changes no longer match its `WHERE` clause.
+* In HSQLDB, `LIMIT 0` means no limit.
+* Each pass finds its rows through the `WHERE` clause, so without an
+  index on what it tests, each pass scans past the rows already done.
+  For a large table, an index created before the statement (and
+  dropped after it, if it isn't otherwise needed) avoids this.
+* On a new or empty database, the statement runs once and changes
+  nothing, so it costs nothing in tests.
+
+The directive goes on its own line before the statement, with only
+blank lines and comments in between, and the statement must start on a
+line of its own. A `repeat` directive anywhere else is an error. It's
+part of the script's digest.
+
+A script with a repeated statement is always run with statement
+tracking, whatever `:track-statements` is set to, and can always be
+resumed: if the install is interrupted, the next open picks up at the
+statement that was running, rather than reporting an incomplete
+install. A repeated statement is only recorded as applied once it
+changes no rows, so a resumed install runs it again, carrying on from
+where it got to.
+
+Progress is logged at `INFO` every ten seconds while a statement
+repeats, and its total passes and rows when it finishes.
 
 ### Detecting Changed Scripts
 
@@ -252,7 +311,8 @@ whitespace are collapsed and `--` comments dropped, so re-indenting a
 statement, rewording a comment or adding blank lines doesn't count as a
 change. Changing a statement does, as does adding whitespace where
 there was none (`VALUES(1)` to `VALUES (1)`), and so does adding,
-removing or reordering `requires` or `replaces` directives.
+removing or reordering `requires` or `replaces` directives, or adding
+or removing a `repeat` directive.
 
 Scripts installed before `sql-file` recorded digests get one, from the
 script as it is then, the first time the database is opened. Scripts
@@ -266,6 +326,36 @@ don't reach (through `requires` and `replaces`) usually mean older code
 running against a newer database, for example after a rollback. This
 is an error by default, and a warning with `:development-mode true`.
 `:on-uncovered-schema` (`:error` or `:warn`) overrides either.
+
+### Installing Schemas Separately from Startup
+
+By default, opening a database installs whatever the requested schemas
+need, so a long-running script holds up application startup. For
+larger databases, installation can instead be a separate step, run
+before the application starts, for example during a maintenance window.
+
+`migrate` takes the same options as `open-local`, installs whatever
+the requested schemas need, and then shuts the database down (so
+another process can open it). It returns the ids of the schemas it
+installed:
+
+```clojure
+(sql-file/migrate {:name "app-db" :schemas ["app/0008-backfill"]})
+;; ["app/0008-backfill"]
+```
+
+The application then opens the database with
+`:on-pending-schema :error`. Everything else happens as usual, but if
+any schema still needs installing, opening the database fails with a
+message listing them, rather than installing them. (`sql-file`'s own
+tables are still created or upgraded.) Tests and in-memory databases
+can keep the default, `:install`.
+
+With `:backup-before-install`, the database is backed up (with
+`BACKUP DATABASE ... BLOCKING`) before anything is installed, whether
+by `migrate` or `open-local`. A path ending in `/` names a directory,
+and HSQLDB gives each backup a name with the time it was made. Nothing
+is backed up when there's nothing to install.
 
 ## Connections and Pools
 
@@ -318,8 +408,9 @@ These functions each take an open connection:
 
 * At `INFO`, it logs important events: opening a database, installing
   or recording a schema, migrating records from an earlier `sql-file`,
-  recording digests for schemas installed before digests existed, and
-  resuming a failed script.
+  recording digests for schemas installed before digests existed,
+  resuming a failed script, backing up before an install, and the
+  progress of repeated statements.
 * At `WARN`, it logs the conditions that `:development-mode` (or
   `:on-schema-change` / `:on-uncovered-schema` set to `:warn`) turns
   from errors into warnings: edited installed scripts, and installed
