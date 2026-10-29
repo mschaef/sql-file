@@ -44,6 +44,7 @@
                  [org.hsqldb/hsqldb "2.7.4"]
                  [org.hsqldb/sqltool "2.7.4"]
                  [org.clojure/java.jdbc "0.7.12"]
+                 [yesql "0.6.0-alpha2"]
                  [org.slf4j/log4j-over-slf4j "2.0.17"]
                  [org.clojure/tools.logging "1.3.0"]
                  [org.clojure/tools.reader "1.5.2"]

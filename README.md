@@ -388,6 +388,47 @@ since it only knows about the one schema.
 no rows) and `query-scalar-required` (the same, but throwing if there
 are no rows).
 
+## Queries with yesql
+
+sql-file works with [yesql](https://github.com/krisajenkins/yesql)
+query files, which it also uses for its own tables.
+`sql-file.middleware` keeps a current connection for a body of code
+(`with-db-connection`, `with-db-transaction`, and
+`wrap-db-connection` for a handler), and
+`sql-file.query-middleware/query-middleware` runs yesql queries on it:
+
+```clojure
+(require '[yesql.core :refer [defqueries]]
+         '[sql-file.middleware :refer [with-db-connection]]
+         '[sql-file.query-middleware :as query-middleware])
+
+(defqueries "app/queries.sql"
+  {:middleware query-middleware/query-middleware})
+
+(with-db-connection db
+  (count-tags))
+```
+
+A query can declare how its result is returned, with an `info` value:
+
+```sql
+-- name: count-tags
+-- info-query-mode: :scalar
+SELECT COUNT(*) FROM tag
+```
+
+The modes are `:direct` (the default: the rows as returned),
+`:scalar` (the single value of a single-column result, or `nil`),
+`:row` (the first row, or `nil`) and `:column` (the values of a
+single-column result).
+
+`query-middleware` is the composition of three middleware that can
+also be used separately, in this order: `current-connection-middleware`
+(a `:connection` passed with a call still takes precedence),
+`query-mode-middleware`, and `log-query-middleware` (debug-level
+timing of each query). Other middleware, such as a cache, can go
+between them with `comp`.
+
 ## Maintenance
 
 These functions each take an open connection:

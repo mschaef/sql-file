@@ -22,10 +22,10 @@
 ;; You must not remove this notice, or any other, from this software.
 
 (ns sql-file.core
-  (:use sql-file.sql-util)
   (:require [clojure.tools.logging :as log]
             [clojure.java.jdbc :as jdbc]
             [sql-file.script :as script]
+            [sql-file.queries :as query]
             [hikari-cp.core :as hikari-cp]))
 
 (defn- schema-path [conn]
@@ -257,10 +257,20 @@ leading comment block are an error, rather than being ignored."
 (defn- now []
   (java.sql.Timestamp. (System/currentTimeMillis)))
 
+(defn- on
+  "Call options for running one of sql-file's own queries (see
+  sql-file.queries) on conn."
+  [conn]
+  {:connection conn})
+
 (defn- table-exists? [conn table-name]
-  (pos? (query-scalar conn [(str "SELECT COUNT(*) FROM information_schema.tables"
-                                 " WHERE table_name = ?")
-                            (.toUpperCase ^String table-name)])))
+  (pos? (query/count-tables-named {:table_name (.toUpperCase ^String table-name)}
+                                  (on conn))))
+
+(defn- column-exists? [conn table-name column-name]
+  (pos? (query/count-columns-named {:table_name (.toUpperCase ^String table-name)
+                                    :column_name (.toUpperCase ^String column-name)}
+                                   (on conn))))
 
 (defn legacy-schema-id [schema-name schema-version]
   "The schema id of version schema-version of the numbered schema
@@ -280,20 +290,30 @@ the version number, otherwise nil."
     (legacy-schema-id schema-name (dec schema-version))))
 
 (defn- all-schema-ids [conn]
-  (query-column conn ["SELECT schema_id FROM sql_file_installed"]))
+  (query/get-all-schema-ids {} (on conn)))
 
 (defn- completed-schema-ids [conn]
-  (query-column conn [(str "SELECT schema_id FROM sql_file_installed"
-                           " WHERE NOT (how = 'run' AND completed_on IS NULL)")]))
+  (query/get-completed-schema-ids {} (on conn)))
 
 (defn installed-schemas [conn]
   "Return the rows of sql_file_installed: one map per installed schema,
 with :schema_id, :how, :requires, :replaces, :digest, :started_on and
 :completed_on."
-  (query-all conn ["SELECT * FROM sql_file_installed ORDER BY schema_id"]))
+  (query/get-installed-schemas {} (on conn)))
 
-(defn- insert-installed! [conn row]
-  (jdbc/insert! conn :sql_file_installed row))
+(def ^:private installed-row-defaults
+  {:requires nil
+   :replaces nil
+   :digest nil
+   :statements_tracked false
+   :started_on nil
+   :completed_on nil})
+
+(defn- insert-installed!
+  "Insert a row into sql_file_installed. row needs :schema_id and :how;
+  the other columns default to null (statements_tracked to false)."
+  [conn row]
+  (query/insert-installed! (merge installed-row-defaults row) (on conn)))
 
 (defn- mirror-legacy-version! [conn schema-name schema-version]
   "Keep the older sql_file_schema table in step, for rollback to an
@@ -301,14 +321,13 @@ older sql-file. sql-file's own schema stays at version 0 there, which
 is all an older sql-file knows how to handle."
   (when (and (not= schema-name "sql-file")
              (table-exists? conn "sql_file_schema"))
-    (if (some? (query-scalar conn ["SELECT schema_version FROM sql_file_schema WHERE schema_name = ?"
-                                   schema-name]))
-      (jdbc/update! conn :sql_file_schema
-                    {:schema_version schema-version}
-                    ["schema_name = ?" schema-name])
-      (jdbc/insert! conn :sql_file_schema
-                    {:schema_name schema-name
-                     :schema_version schema-version}))))
+    (if (some? (query/get-legacy-schema-version {:schema_name schema-name} (on conn)))
+      (query/set-legacy-schema-version! {:schema_name schema-name
+                                         :schema_version schema-version}
+                                        (on conn))
+      (query/insert-legacy-schema! {:schema_name schema-name
+                                    :schema_version schema-version}
+                                   (on conn)))))
 
 (defn get-schema-version [conn schema-name]
   "Retrieves the current version of a numbered schema within a database
@@ -337,7 +356,7 @@ are removed."
     (doseq [id ids]
       (when-let [version (legacy-schema-version schema-name id)]
         (when (> version req-schema-version)
-          (jdbc/delete! conn :sql_file_installed ["schema_id = ?" id]))))
+          (query/delete-installed! {:schema_id id} (on conn)))))
     (doseq [version (range (inc req-schema-version))]
       (let [id (legacy-schema-id schema-name version)]
         (when-not (installed id)
@@ -565,18 +584,17 @@ anything is installed."
   (digest-of [] [] [stmt]))
 
 (defn- record-statement! [conn schema-id ordinal stmt]
-  (jdbc/insert! conn :sql_file_statement {:schema_id schema-id
-                                          :ordinal ordinal
-                                          :digest (statement-digest stmt)
-                                          :completed_on (now)}))
+  (query/insert-statement! {:schema_id schema-id
+                             :ordinal ordinal
+                             :digest (statement-digest stmt)
+                             :completed_on (now)}
+                            (on conn)))
 
 (defn installed-statements [conn schema-id]
   "The statements of schema-id recorded as applied, when statement
 tracking was on: maps with :ordinal (from 1), :digest and
 :completed_on."
-  (query-all conn [(str "SELECT ordinal, digest, completed_on FROM sql_file_statement"
-                        " WHERE schema_id = ? ORDER BY ordinal")
-                   schema-id]))
+  (query/get-installed-statements {:schema_id schema-id} (on conn)))
 
 (defn- resume-point [conn script]
   "For a tracked install that didn't finish, the ordinal of the first
@@ -596,9 +614,7 @@ statement still to run. Statements already applied must be unchanged."
     (inc (reduce max 0 (map :ordinal applied)))))
 
 (defn- incomplete-row [conn schema-id]
-  (query-first conn [(str "SELECT * FROM sql_file_installed"
-                          " WHERE schema_id = ? AND how = 'run' AND completed_on IS NULL")
-                     schema-id]))
+  (query/get-incomplete-install {:schema_id schema-id} (on conn)))
 
 (defn- run-tracked [conn script first-ordinal]
   (let [{:keys [id url statements]} script]
@@ -613,12 +629,12 @@ script as it is now. The schema's row is updated to match the script."
         first-ordinal (resume-point conn script)]
     (log/info "Resuming installation of schema" id "at statement" first-ordinal)
     (run-tracked conn script first-ordinal)
-    (jdbc/update! conn :sql_file_installed
-                  {:requires (join-ids requires)
-                   :replaces (join-ids replaces)
-                   :digest digest
-                   :completed_on (now)}
-                  ["schema_id = ?" id])))
+    (query/set-installed-resumed! {:schema_id id
+                                   :requires (join-ids requires)
+                                   :replaces (join-ids replaces)
+                                   :digest digest
+                                   :completed_on (now)}
+                                  (on conn))))
 
 (defn- install-script [conn script]
   "Install a single schema script whose requirements are already
@@ -657,9 +673,9 @@ recorded as installed."
           (if tracked
             (run-tracked conn script 1)
             (run-script conn url statements))
-          (jdbc/update! conn :sql_file_installed
-                        {:completed_on (now)}
-                        ["schema_id = ?" id])))
+          (query/set-installed-completed! {:schema_id id
+                                           :completed_on (now)}
+                                          (on conn))))
       (catch Exception ex
         (throw (Exception. (str "Error installing schema: " id) ex))))
     (when legacy
@@ -724,9 +740,9 @@ Scripts that no longer exist are skipped, as are sql-file's own."
             (nil? digest)
             (do
               (log/info "Recording digest for installed schema:" schema_id)
-              (jdbc/update! conn :sql_file_installed
-                            {:digest (:digest script)}
-                            ["schema_id = ?" schema_id]))
+              (query/set-installed-digest! {:schema_id schema_id
+                                            :digest (:digest script)}
+                                           (on conn)))
 
             (not= digest (:digest script))
             (swap! changed conj (str schema_id " (" (:url script) ")"))))
@@ -763,7 +779,7 @@ Scripts that no longer exist are skipped, as are sql-file's own."
 left alone, so this can safely be repeated."
   (let [installed (set (all-schema-ids conn))]
     (doseq [{schema-name :schema_name
-             schema-version :schema_version} (query-all conn ["SELECT * FROM sql_file_schema"])]
+             schema-version :schema_version} (query/get-legacy-schemas {} (on conn))]
       (log/info "Migrating installed schema records:" schema-name "versions 0 to" schema-version)
       (doseq [version (range (inc schema-version))]
         (let [id (legacy-schema-id schema-name version)]
@@ -780,17 +796,14 @@ interrupted it's simply repeated on the next open."
   (when-not (table-exists? conn "sql_file_schema")
     (log/info "Installing schema: [sql-file 0]")
     (run-internal-script conn 0)
-    (jdbc/insert! conn :sql_file_schema {:schema_name "sql-file"
-                                         :schema_version 0}))
+    (query/insert-legacy-schema! {:schema_name "sql-file"
+                                  :schema_version 0}
+                                 (on conn)))
   (when (and (table-exists? conn "sql_file_installed")
-             (zero? (query-scalar conn [(str "SELECT COUNT(*) FROM information_schema.columns"
-                                             " WHERE table_name = 'SQL_FILE_INSTALLED'"
-                                             " AND column_name = 'STATEMENTS_TRACKED'")])))
+             (not (column-exists? conn "sql_file_installed" "statements_tracked")))
     ;; Databases opened with a 0.6.0 development snapshot, before this
     ;; column was added to sql-file-1.
-    (jdbc/db-do-prepared conn (str "ALTER TABLE sql_file_installed"
-                                   " ADD statements_tracked BOOLEAN DEFAULT FALSE NOT NULL"
-                                   " BEFORE started_on")))
+    (query/add-statements-tracked-column! {} (on conn)))
   (when-not (and (table-exists? conn "sql_file_installed")
                  (some #{"sql-file-1"} (all-schema-ids conn)))
     (let [started-on (now)]
@@ -829,10 +842,7 @@ weren't resumed."
                                             (:statements_tracked %)
                                             (or (track-statements? conn)
                                                 (resumable-script? conn (:schema_id %))))
-                                      (query-all conn [(str "SELECT schema_id, started_on, statements_tracked"
-                                                            " FROM sql_file_installed"
-                                                            " WHERE how = 'run' AND completed_on IS NULL"
-                                                            " ORDER BY started_on")])))]
+                                      (query/get-incomplete-installs {} (on conn))))]
      (throw (Exception. (str "Schema installation did not complete: "
                              (clojure.string/join ", " (map #(str (:schema_id %) " (started " (:started_on %) ")")
                                                             incomplete))
@@ -862,7 +872,7 @@ already installed. The schema is an id, or a numbered schema as
   conn)
 
 (defn checkpoint-defragment [conn]
-  (jdbc/db-do-prepared conn "CHECKPOINT DEFRAG"))
+  (query/checkpoint-defragment! {} (on conn)))
 
 (defn backup-to-file-blocking [conn output-path]
   (jdbc/db-do-prepared conn (str "BACKUP DATABASE TO '" output-path "' BLOCKING")))
@@ -942,7 +952,7 @@ resumed), ordered by completion time."
                        (sort-by :completed_on)
                        (map :schema_id))]
     (log/info "Installed schemas:" (if (seq installed) (clojure.string/join ", " installed) "none"))
-    (jdbc/db-do-prepared conn "SHUTDOWN")
+    (query/shutdown! {} (on conn))
     (vec installed)))
 
 (defn open-pool [desc]
