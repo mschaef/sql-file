@@ -394,7 +394,11 @@ sql-file works with [yesql](https://github.com/krisajenkins/yesql)
 query files, which it also uses for its own tables.
 `sql-file.middleware` keeps a current connection for a body of code
 (`with-db-connection`, `with-db-transaction`, and
-`wrap-db-connection` for a handler), and
+`wrap-db-connection` for a handler). The connection is opened only
+when something first uses it, through `current-db-connection`, and
+closed (returned to the pool) when the body ends, so a request that
+never touches the database never takes a pooled connection. If
+opening it fails, say on a pool timeout, the next use tries again.
 `sql-file.query-middleware/query-middleware` runs yesql queries on it:
 
 ```clojure
