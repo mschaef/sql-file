@@ -585,10 +585,10 @@ anything is installed."
 
 (defn- record-statement! [conn schema-id ordinal stmt]
   (query/insert-statement! {:schema_id schema-id
-                             :ordinal ordinal
-                             :digest (statement-digest stmt)
-                             :completed_on (now)}
-                            (on conn)))
+                            :ordinal ordinal
+                            :digest (statement-digest stmt)
+                            :completed_on (now)}
+                           (on conn)))
 
 (defn installed-statements [conn schema-id]
   "The statements of schema-id recorded as applied, when statement
