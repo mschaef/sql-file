@@ -426,8 +426,49 @@ single-column result).
 also be used separately, in this order: `current-connection-middleware`
 (a `:connection` passed with a call still takes precedence),
 `query-mode-middleware`, and `log-query-middleware` (debug-level
-timing of each query). Other middleware, such as a cache, can go
-between them with `comp`.
+timing of each query). Other middleware, such as the query cache
+below, can go between them with `comp`.
+
+### Caching Query Results
+
+`sql-file.query-cache` caches query results in memory. A query is
+cached by giving it a `cache-name`: a vector of strings and keywords,
+where each keyword is filled in from the query's arguments. A query
+that changes the data names what it invalidates:
+
+```sql
+-- name: get-tags-by-item
+-- info-cache-name: ["item" :item_id]
+SELECT * FROM tag WHERE item_id = :item_id
+
+-- name: add-tag!
+-- info-invalidate-cache-names: [["item" :item_id]]
+INSERT INTO tag (item_id, name) VALUES (:item_id, :name)
+```
+
+Add `query-cache-middleware` to the chain (outside the query mode, so
+cached results are already shaped), and bind a cache, made with
+`make-query-cache`, around the code that runs queries:
+
+```clojure
+(require '[sql-file.query-cache :as query-cache])
+
+(defqueries "app/queries.sql"
+  {:middleware (comp query-middleware/current-connection-middleware
+                     query-cache/query-cache-middleware
+                     query-middleware/query-mode-middleware
+                     query-middleware/log-query-middleware)})
+
+(defonce cache (query-cache/make-query-cache))
+
+(query-cache/with-query-cache cache
+  (with-db-connection db
+    (get-tags-by-item {:item_id 1})))
+```
+
+Queries run uncached when no cache is bound. `invalidate-cache!` (with
+a name such as `["item" 1]`) and `clear-cache!` change the bound
+cache directly, for changes made other than through a query.
 
 ## Maintenance
 
